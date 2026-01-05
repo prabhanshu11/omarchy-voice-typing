@@ -1,0 +1,10 @@
+[
+  {
+    "from": ["Dovac", "Dovak"],
+    "to": "Dvorak"
+  },
+  {
+      "from": ["Omarchy"],
+      "to": "Omarchy"
+  }
+]

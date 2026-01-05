@@ -1,0 +1,14 @@
+[Unit]
+Description=Voice Gateway AssemblyAI Gateway
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/voice-gateway/service.env
+ExecStart=/home/prabhanshu/Programs/omarchy-voice-typing/gateway/voice-gateway
+Restart=on-failure
+User=prabhanshu
+WorkingDirectory=/home/prabhanshu/Programs/omarchy-voice-typing/gateway
+
+[Install]
+WantedBy=multi-user.target

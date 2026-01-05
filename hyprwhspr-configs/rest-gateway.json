@@ -1,0 +1,5 @@
+{
+  "transcription_backend": "rest-api",
+  "rest_endpoint_url": "http://127.0.0.1:8765/v1/transcribe",
+  "rest_timeout": 300
+}

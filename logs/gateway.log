@@ -1,0 +1,7 @@
+2026/01/01 16:58:04 Starting gateway server on :8000
+2026/01/01 16:58:10 Received POST request to /v1/transcribe
+2026/01/01 17:00:10 Error: Failed to upload to AssemblyAI, Details: Post "https://api.assemblyai.com/v2/upload": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+2026/01/01 17:00:10 Received POST request to /v1/transcribe
+2026/01/01 17:00:16 Processing transcription for audio URL: https://cdn.assemblyai.com/upload/3197684fa275dd234dd1305c2f954c0a08d06d8d87ff4f4311820a07e155f9cc/18a690f9-8e06-413c-8d9a-ac61fd1142f2
+2026/01/01 17:00:17 Transcript job created with ID: 7b1bf2a1-0537-4d62-a133-72abc474b423
+2026/01/01 17:00:28 Transcription completed for ID: 7b1bf2a1-0537-4d62-a133-72abc474b423. Duration: 264.00s
