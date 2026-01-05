@@ -1,5 +1,14 @@
 # hyprwhspr Enhancement Tasks
 
+## Status
+
+- ✅ **Task 1**: hyprwhspr backend fixed - gateway running on port 8765
+- ✅ **Task 2**: Keyboard shortcut added to notification - restart waybar to see changes
+- ✅ **Task 3**: Initial git commit created
+- ✅ **Task 4**: Test module created at `tests/test_shortcut_simulation.py`
+
+**All tasks completed!**
+
 ## Context
 
 hyprwhspr is a voice-to-text tool for Hyprland. The user has a local gateway project
