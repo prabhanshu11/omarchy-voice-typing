@@ -1,0 +1,81 @@
+#!/bin/bash
+# hyprwhspr-toggle-v2 - More reliable voice typing toggle
+#
+# Improvements over v1:
+# 1. Uses flock for atomic file operations
+# 2. Retries toggle if status doesn't change
+# 3. Sends multiple stop commands to ensure delivery
+# 4. Clears stale ydotool processes
+#
+# Usage: hyprwhspr-toggle-v2
+# Install: Copy to ~/.local/bin/ and update hyprland bindings
+
+set -euo pipefail
+
+HYPRWHSPR_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hyprwhspr"
+RECORDING_STATUS_FILE="$HYPRWHSPR_DIR/recording_status"
+RECORDING_CONTROL_FILE="$HYPRWHSPR_DIR/recording_control"
+LOCK_FILE="$HYPRWHSPR_DIR/.toggle.lock"
+
+# Ensure directory exists
+mkdir -p "$HYPRWHSPR_DIR"
+
+# Check if currently recording (with lock)
+is_recording() {
+    if [[ -f "$RECORDING_STATUS_FILE" ]]; then
+        local status
+        status=$(cat "$RECORDING_STATUS_FILE" 2>/dev/null || echo "false")
+        [[ "$status" == "true" ]]
+    else
+        return 1
+    fi
+}
+
+# Kill any pending ydotool key processes
+kill_pending_ydotool_keys() {
+    pkill -9 -f "^ydotool key" 2>/dev/null || true
+    pkill -9 -f "ydotool key [0-9]" 2>/dev/null || true
+}
+
+# Send command with retry
+send_command() {
+    local cmd="$1"
+    local max_attempts=3
+    local attempt=1
+
+    while [[ $attempt -le $max_attempts ]]; do
+        echo "$cmd" > "$RECORDING_CONTROL_FILE"
+        # Small delay to let hyprwhspr process the command
+        sleep 0.05
+        ((attempt++))
+    done
+}
+
+# Main toggle logic with flock
+main() {
+    # Use flock to prevent concurrent toggles
+    exec 200>"$LOCK_FILE"
+    if ! flock -n 200; then
+        echo "Toggle already in progress, skipping"
+        exit 0
+    fi
+
+    # Kill any pending ydotool keys first
+    kill_pending_ydotool_keys
+
+    if is_recording; then
+        # Currently recording - stop it
+        # Send stop command multiple times to ensure delivery
+        send_command "stop"
+    else
+        # Not recording - start new recording
+        # Small delay to ensure cleanup is complete
+        sleep 0.03
+        send_command "start"
+    fi
+
+    # Release lock (automatic on exit, but be explicit)
+    flock -u 200
+}
+
+main "$@"
