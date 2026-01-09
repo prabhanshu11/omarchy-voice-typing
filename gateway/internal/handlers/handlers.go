@@ -169,7 +169,13 @@ func (h *Handler) TranscribeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) pollTranscript(id string) (*assemblyai.TranscriptResponse, error) {
-	ticker := time.NewTicker(2 * time.Second)
+	// Start with fast polling (350ms), then back off to reduce API load
+	// This reduces latency from ~2s to ~350ms for quick transcriptions
+	initialInterval := 350 * time.Millisecond
+	maxInterval := 2 * time.Second
+	currentInterval := initialInterval
+
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
 	timeout := time.After(300 * time.Second)
@@ -190,6 +196,15 @@ func (h *Handler) pollTranscript(id string) (*assemblyai.TranscriptResponse, err
 
 			if res.Status == "error" {
 				return nil, fmt.Errorf("assemblyai error: %s", res.Error)
+			}
+
+			// Exponential backoff: increase interval up to maxInterval
+			if currentInterval < maxInterval {
+				currentInterval = currentInterval * 3 / 2 // 1.5x increase
+				if currentInterval > maxInterval {
+					currentInterval = maxInterval
+				}
+				ticker.Reset(currentInterval)
 			}
 		}
 	}
