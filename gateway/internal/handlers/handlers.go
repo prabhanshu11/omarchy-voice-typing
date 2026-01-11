@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/prabhanshu/voice-gateway/internal/assemblyai"
+	"github.com/prabhanshu/voice-gateway/internal/auth"
 )
 
 type TranscribeRequest struct {
@@ -31,6 +33,7 @@ type ErrorResponse struct {
 type Handler struct {
 	AAIClient      *assemblyai.Client
 	CustomSpelling []assemblyai.CustomSpelling
+	clientMutex    sync.Mutex
 }
 
 type ReplacementConfig struct {
@@ -65,10 +68,43 @@ func LoadReplacements(path string) ([]assemblyai.CustomSpelling, error) {
 	return spellings, nil
 }
 
+// ensureClient ensures the AAIClient is initialized.
+// If not initialized, it attempts to load the API key from pass with GPG unlock prompt.
+func (h *Handler) ensureClient() error {
+	h.clientMutex.Lock()
+	defer h.clientMutex.Unlock()
+
+	// Already initialized
+	if h.AAIClient != nil {
+		return nil
+	}
+
+	log.Printf("[GPG] API client not initialized - attempting to load API key from pass")
+
+	// Load API key with GPG unlock prompt
+	apiKey, err := auth.LoadAPIKeyWithPrompt()
+	if err != nil {
+		return fmt.Errorf("failed to load API key: %w", err)
+	}
+
+	// Initialize client
+	h.AAIClient = assemblyai.NewClient(apiKey)
+	log.Printf("[GPG] API client initialized successfully")
+
+	return nil
+}
+
 func (h *Handler) TranscribeHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Received %s request to %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Ensure API client is initialized (loads from pass if needed)
+	if err := h.ensureClient(); err != nil {
+		log.Printf("[ERROR] Failed to initialize API client: %v", err)
+		h.sendError(w, http.StatusInternalServerError, "Failed to load API key", err.Error())
 		return
 	}
 

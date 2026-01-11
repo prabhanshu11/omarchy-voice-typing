@@ -11,16 +11,22 @@ import (
 )
 
 func main() {
+	// Try loading API key from environment first
 	apiKey := os.Getenv("ASSEMBLYAI_API_KEY")
 	if apiKey == "" {
 		apiKey = os.Getenv("ASSEMBLY_API_KEY")
 	}
 
+	// If no API key in environment, try loading from pass (non-blocking check)
 	if apiKey == "" {
-		log.Fatal("ASSEMBLYAI_API_KEY or ASSEMBLY_API_KEY environment variable is required")
+		log.Printf("No API key in environment - will load from pass on first request")
 	}
 
-	aaiClient := assemblyai.NewClient(apiKey)
+	var aaiClient *assemblyai.Client
+	if apiKey != "" {
+		aaiClient = assemblyai.NewClient(apiKey)
+		log.Printf("API key loaded from environment")
+	}
 
 	replacementsPath := "../config/replacements.json"
 	customSpelling, err := handlers.LoadReplacements(replacementsPath)
