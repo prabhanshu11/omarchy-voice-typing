@@ -1,0 +1,23 @@
+[Unit]
+Description=Voice Typing Audio Source Monitor
+Documentation=https://github.com/prabhanshu11/omarchy-voice-typing
+After=pipewire.service pulseaudio.service
+Requires=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/Programs/omarchy-voice-typing/audio-source-monitor.sh start
+ExecStop=%h/Programs/omarchy-voice-typing/audio-source-monitor.sh stop
+Restart=on-failure
+RestartSec=5
+
+# Environment
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=audio-source-monitor
+
+[Install]
+WantedBy=default.target
