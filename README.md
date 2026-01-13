@@ -132,7 +132,7 @@ This project runs on multiple machines (desktop + laptop). **Git is the ONLY syn
 Changes may also need to be synced in:
 - `~/Programs/local-bootstrapping` - System config, systemd services, dotfiles
 
-Same workflow applies: push to branch, pull on other machine, verify, merge.
+**IMPORTANT:** Same git workflow applies to local-bootstrapping. You CANNOT directly edit files on the other machine. Push to a branch, pull on the other machine, verify with user, then merge.
 
 ### Investigation Tracking
 For debugging sessions spanning multiple machines:
