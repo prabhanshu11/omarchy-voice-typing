@@ -81,6 +81,53 @@ User WANTS `pass` on laptop too, IF we can make it work with:
 3. [ ] Make audio source fix persistent across reboots
 4. [ ] Consider implementing `pass` on laptop with auth handling
 
+### NEW TASK: Implement Streaming Audio (Priority: High)
+
+**Current approach (inefficient):**
+- Record entire audio to WAV file
+- Send complete file to AssemblyAI gateway
+- Wait for transcription
+- Delete file
+
+**Target approach (streaming):**
+- Stream audio chunks in real-time to AssemblyAI
+- Get transcription results as they arrive
+- Lower latency, no file I/O overhead
+- More responsive UX
+
+**Steps:**
+1. **Research:** Find AssemblyAI's streaming API documentation
+   - Check their WebSocket or streaming HTTP endpoints
+   - Understand audio format requirements (sample rate, encoding)
+   - Check authentication method for streaming
+
+2. **Design:** Plan architecture changes
+   - How to stream from hyprwhspr to gateway
+   - Gateway WebSocket implementation (if needed)
+   - Buffer management for audio chunks
+
+3. **Implement:** Code the streaming pipeline
+   - Modify hyprwhspr to stream instead of file upload
+   - Update gateway to handle streaming
+   - Implement chunked audio processing
+
+4. **Test:** Verify streaming works
+   - Test latency improvement
+   - Test reliability vs file-based approach
+   - Test with various recording lengths
+
+**Resources to check:**
+- https://www.assemblyai.com/docs/api-reference/streaming
+- AssemblyAI Python/Go SDK documentation
+- Existing streaming examples from AssemblyAI
+
+**Success criteria:**
+- [ ] Streaming API researched and documented
+- [ ] Architecture design approved by main1
+- [ ] Streaming implementation working
+- [ ] Latency improved compared to file-based approach
+- [ ] No regressions in reliability
+
 ## Coordination Protocol
 
 **IMPORTANT - You are running on the laptop, main1 is on desktop:**
