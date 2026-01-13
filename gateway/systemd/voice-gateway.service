@@ -5,7 +5,11 @@ After=network.target
 
 [Service]
 Type=simple
+# Kill any orphan process using port 8765 before starting
+ExecStartPre=-/usr/bin/fuser -k 8765/tcp
 ExecStart=%h/Programs/omarchy-voice-typing/gateway/voice-gateway
+# Clean up on stop
+ExecStopPost=-/usr/bin/fuser -k 8765/tcp
 Restart=on-failure
 RestartSec=5
 WorkingDirectory=%h/Programs/omarchy-voice-typing/gateway
