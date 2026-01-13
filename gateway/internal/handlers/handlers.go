@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -111,7 +112,7 @@ func (h *Handler) TranscribeHandler(w http.ResponseWriter, r *http.Request) {
 	var audioURL string
 
 	// Check if it's multipart/form-data
-	if contentType := r.Header.Get("Content-Type"); contentType != "" && (contentType[:19] == "multipart/form-data" || contentType[:33] == "application/x-www-form-urlencoded") {
+	if contentType := r.Header.Get("Content-Type"); contentType != "" && (strings.HasPrefix(contentType, "multipart/form-data") || strings.HasPrefix(contentType, "application/x-www-form-urlencoded")) {
 		err := r.ParseMultipartForm(32 << 20) // 32MB max in memory
 		if err != nil {
 			h.sendError(w, http.StatusBadRequest, "Failed to parse multipart form", err.Error())

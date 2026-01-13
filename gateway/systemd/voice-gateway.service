@@ -1,14 +1,22 @@
 [Unit]
-Description=Voice Gateway AssemblyAI Gateway
+Description=Voice Gateway - AssemblyAI REST API Gateway
+Documentation=https://github.com/prabhanshu11/omarchy-voice-typing
 After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/voice-gateway/service.env
-ExecStart=/home/prabhanshu/Programs/omarchy-voice-typing/gateway/voice-gateway
+ExecStart=%h/Programs/omarchy-voice-typing/gateway/voice-gateway
 Restart=on-failure
-User=prabhanshu
-WorkingDirectory=/home/prabhanshu/Programs/omarchy-voice-typing/gateway
+RestartSec=5
+WorkingDirectory=%h/Programs/omarchy-voice-typing/gateway
+
+# Load API key from .env file
+EnvironmentFile=%h/Programs/omarchy-voice-typing/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=voice-gateway
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
