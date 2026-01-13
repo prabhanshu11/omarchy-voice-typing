@@ -214,7 +214,42 @@ None - proceeding with fix for Bug #1 (port conflict)
 4. ~~Add service dependency ordering~~ (COMPLETE)
 5. ~~Test voice typing end-to-end~~ (COMPLETE - services verified)
 6. ~~Commit fixes~~ (COMPLETE - commit 0b9f9a8)
-7. User should test actual voice typing with Super+` keybinding
+7. ~~Push branches for desktop sync~~ (COMPLETE)
+8. **FOR DESKTOP:** Pull branches and apply fixes (see below)
+9. User should test voice typing extensively from desktop
+
+## Desktop Sync Instructions (for main1)
+
+**Two branches need to be pulled on desktop:**
+
+### 1. omarchy-voice-typing repo
+```bash
+cd ~/Programs/omarchy-voice-typing
+git fetch origin
+git checkout fix/gateway-service-not-running
+# Copy updated service file
+cp gateway/systemd/voice-gateway.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user restart voice-gateway
+```
+
+### 2. local-bootstrapping repo
+```bash
+cd ~/Programs/local-bootstrapping
+git fetch origin
+git checkout fix/voice-gateway-dependency
+# Copy updated hyprwhspr override
+cp -r dotfiles/systemd/user/hyprwhspr.service.d ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user restart hyprwhspr
+```
+
+### Verify on desktop
+```bash
+systemctl --user status voice-gateway hyprwhspr
+curl -s -X POST http://127.0.0.1:8765/v1/transcribe -d '{}' | head -c 100
+# Then test Super+` keybinding
+```
 
 ## Related Files
 
