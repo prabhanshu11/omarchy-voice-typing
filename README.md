@@ -88,3 +88,54 @@ sudo systemctl restart voice-gateway
 ```
 
 See `project_context.md` for detailed specifications.
+
+## Multi-Machine Development Workflow
+
+This project runs on multiple machines (desktop + laptop). **Git is the ONLY sync method.**
+
+### Sync Protocol
+
+**When working on LAPTOP and need to sync to DESKTOP (or vice versa):**
+
+1. **Push to a branch** from current machine:
+   ```bash
+   git checkout -b fix/descriptive-name
+   git add .
+   git commit -m "[voice-typing] Description of changes"
+   git push -u origin fix/descriptive-name
+   ```
+
+2. **On the other machine**, pull the branch:
+   ```bash
+   cd ~/Programs/omarchy-voice-typing
+   git fetch origin
+   git checkout fix/descriptive-name
+   ```
+
+3. **User verifies** the changes work on that machine
+
+4. **Continue working** on the branch until issue is fully resolved
+
+5. **Merge to master** once user is happy:
+   ```bash
+   git checkout master
+   git merge fix/descriptive-name
+   git push origin master
+   ```
+
+### Branch Naming Convention
+- `fix/` - Bug fixes (e.g., `fix/gateway-service-not-running`)
+- `feature/` - New features
+- `test/` - Testing changes
+
+### Related Repos
+Changes may also need to be synced in:
+- `~/Programs/local-bootstrapping` - System config, systemd services, dotfiles
+
+Same workflow applies: push to branch, pull on other machine, verify, merge.
+
+### Investigation Tracking
+For debugging sessions spanning multiple machines:
+- Use `status.md` in project root to track progress
+- Commit frequently with `[voice-typing]` prefix
+- Document timeline of what was tried and what worked
