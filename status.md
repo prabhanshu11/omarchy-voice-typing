@@ -6,9 +6,36 @@
 **Location:** Running on LAPTOP to save desktop RAM
 
 ## Current Status
-**FIXES APPLIED** - Initial testing passed on laptop (2026-01-14 03:10 IST)
-- User confirmed voice typing working after fixes
-- Awaiting extensive testing from desktop
+**VOICE TYPING FIXED ON DESKTOP** - New issue: waveform animation missing (2026-01-14 03:55 IST)
+
+### What was fixed:
+1. **Branch checkout issue** - Desktop was on master, needed to checkout `fix/gateway-service-not-running`
+2. **Binary outdated** - Rebuilt gateway with `go build` (old binary was panicking)
+3. **Wrong audio source** - PulseAudio default was `bluez_output...monitor` (speaker loopback)
+   - Fixed with: `pactl set-default-source bluez_input.AA:54:88:DD:9B:91`
+   - This was the main issue - recording was capturing silence!
+
+### New issue to investigate: Waveform animation missing
+
+**Findings:**
+- mic-osd daemon is running (PID 1152626, GTK4 available)
+- SIGUSR1 signal can be sent to show overlay
+- Waybar widget shows static icon `` with class="recording" (CSS turns it red)
+- There seem to be TWO visualization systems:
+  1. **mic-osd GTK overlay** - separate window, shows waveform visualization
+  2. **Waybar widget** - just changes icon color to red when recording
+
+**Question for main1:**
+The user mentions "waveform animation on the widget 'mic'" - is this:
+1. The **mic-osd GTK overlay** (separate floating window with waveform)?
+2. Or animated text/dots **inside the waybar widget**?
+
+If #1: mic-osd daemon exists, need to check why overlay isn't visible (Hyprland layer-shell?)
+If #2: Current waybar widget only shows static icon, would need custom implementation
+
+**Other pending items:**
+- Make audio source fix persistent (pactl set-default-source resets on reboot)
+- Consider adding to PulseAudio/PipeWire config or wireplumber rules
 
 ## Coordination Protocol
 
