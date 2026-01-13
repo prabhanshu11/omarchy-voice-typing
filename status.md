@@ -81,6 +81,93 @@ User WANTS `pass` on laptop too, IF we can make it work with:
 3. [ ] Make audio source fix persistent across reboots
 4. [ ] Consider implementing `pass` on laptop with auth handling
 
+## Waveform Investigation (2026-01-14 08:30 IST)
+
+### Version Difference
+| Machine | hyprwhspr version | mic-osd module |
+|---------|------------------|----------------|
+| Desktop | 1.15.1-1 | Present (`/usr/lib/hyprwhspr/lib/mic_osd/`) |
+| Laptop  | 1.12.0-2 | **Missing** |
+
+This explains why mic-osd "never worked" on laptop - the module doesn't exist in version 1.12.0.
+
+### Issue A: mic-osd disappears after ~1 second (Desktop only)
+
+**Location:** `/usr/lib/hyprwhspr/lib/mic_osd/main.py:119-138`
+
+**Root cause:** Audio verification logic with tight threshold:
+```python
+verification_duration = 0.25  # Only 250ms to detect audio!
+max_zero_level = 1e-6         # Very low threshold
+
+# If no audio detected in 250ms, window hides immediately
+if not audio_detected:
+    print("[MIC-OSD] Audio stream returning zeros - hiding window")
+    self.window.set_visible(False)
+    return  # Exit - no timers started
+```
+
+**Why it fails:** Bluetooth microphone (`bluez_input.AA:54:88:DD:9B:91`) may:
+1. Take longer than 250ms to initialize and produce audio
+2. Have very low initial audio levels during startup
+3. Need device-specific warmup time
+
+**Proposed fix:** Increase verification_duration to 1.0s and lower threshold to 1e-8.
+
+### Issue B: Waybar dots not animating (Both machines)
+
+**How it should work:**
+1. hyprwhspr main.py writes audio level to `~/.config/hyprwhspr/audio_level` every 100ms during recording
+2. Waybar tray script (`/usr/lib/hyprwhspr/config/hyprland/hyprwhspr-tray.sh`) reads this file
+3. `get_audio_level_viz()` function converts level (0.0-1.0) to dots visualization (▪▪▪▪·····)
+4. Visualization is included in JSON output: `{"text":"▪▪▪▪····","class":"recording",...}`
+
+**The bug:** The `audio_level` file is NOT being created during recording!
+
+Evidence:
+- No `audio_level` file exists in `~/.config/hyprwhspr/` on either machine
+- Recording works (logs show 40+ seconds of audio, transcription succeeds)
+- But the monitoring thread that writes audio_level may be failing silently
+
+**Code path:**
+```
+Recording starts → _start_recording() → _start_audio_level_monitoring()
+                                                    ↓
+                                    monitor_audio_level() thread
+                                                    ↓
+                         audio_capture.get_audio_level() → writes to audio_level file
+```
+
+**Possible causes:**
+1. `_start_audio_level_monitoring()` not being called
+2. Thread exception caught silently (code has `except: pass`)
+3. `get_audio_level()` returning errors
+4. File write permission issues
+
+**Diagnostic:** User should trigger a recording and check if file appears:
+```bash
+# Start a recording, then in another terminal:
+watch -n 0.5 "ls -la ~/.config/hyprwhspr/audio_level; cat ~/.config/hyprwhspr/audio_level 2>/dev/null"
+```
+
+### Branch Created
+
+**New branch:** `fix/waveform-visualization` in local-bootstrapping repo
+- Branched from: `fix/voice-gateway-dependency`
+- Purpose: Fix both waveform visualization issues to work on both machines
+
+### Fix Strategy
+
+Since hyprwhspr is a system package, we'll use patches via local-bootstrapping:
+
+1. **mic-osd fix (Desktop only):**
+   - Create `~/.local/lib/hyprwhspr-patch/mic_osd/main.py` with adjusted thresholds
+   - PYTHONPATH already configured in service override to load patches first
+
+2. **Waybar dots fix (Both machines):**
+   - Either patch the tray script or add a wrapper
+   - May need to add debug logging first to identify why audio_level isn't written
+
 ### NEW TASK: Implement Streaming Audio (Priority: High)
 
 **Current approach (inefficient):**
