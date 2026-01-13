@@ -168,6 +168,29 @@ Since hyprwhspr is a system package, we'll use patches via local-bootstrapping:
    - Either patch the tray script or add a wrapper
    - May need to add debug logging first to identify why audio_level isn't written
 
+### ACTION REQUIRED: Run Debug Script
+
+To determine why waybar dots aren't showing, please run:
+
+**On Desktop:**
+```bash
+# Terminal 1: Run the debug script
+cd ~/Programs/omarchy-voice-typing
+git pull origin fix/gateway-service-not-running
+./tools/debug-audio-level.sh
+
+# Terminal 2 (or use keybinding): Start a recording
+# Press Super+` to start, speak for 5-10 seconds, press Super+` to stop
+```
+
+**What to look for:**
+1. When recording starts, does `recording_status` show "true"?
+2. Does `audio_level` file appear while recording?
+3. If NO audio_level file → bug in hyprwhspr audio monitoring thread
+4. If audio_level exists but waybar still no dots → bug in tray script
+
+**Report findings** by updating this file or telling main1.
+
 ### NEW TASK: Implement Streaming Audio (Priority: High)
 
 **Current approach (inefficient):**
