@@ -15,27 +15,71 @@
    - Fixed with: `pactl set-default-source bluez_input.AA:54:88:DD:9B:91`
    - This was the main issue - recording was capturing silence!
 
-### New issue to investigate: Waveform animation missing
+### Issue: Two Waveform Visualizations - Both Broken
 
-**Findings:**
-- mic-osd daemon is running (PID 1152626, GTK4 available)
-- SIGUSR1 signal can be sent to show overlay
-- Waybar widget shows static icon `` with class="recording" (CSS turns it red)
-- There seem to be TWO visualization systems:
-  1. **mic-osd GTK overlay** - separate window, shows waveform visualization
-  2. **Waybar widget** - just changes icon color to red when recording
+**User clarification (2026-01-14 04:05 IST):**
 
-**Question for main1:**
-The user mentions "waveform animation on the widget 'mic'" - is this:
-1. The **mic-osd GTK overlay** (separate floating window with waveform)?
-2. Or animated text/dots **inside the waybar widget**?
+There are TWO separate waveform visualizations that BOTH used to work:
 
-If #1: mic-osd daemon exists, need to check why overlay isn't visible (Hyprland layer-shell?)
-If #2: Current waybar widget only shows static icon, would need custom implementation
+1. **Large mic-osd GTK overlay** (floating window)
+   - Shows animated waveform bars
+   - Desktop: Used to work, now shows for 1 second then disappears
+   - Laptop: Never worked (different branch/config)
 
-**Other pending items:**
-- Make audio source fix persistent (pactl set-default-source resets on reboot)
-- Consider adding to PulseAudio/PipeWire config or wireplumber rules
+2. **Small waybar widget dots** (inside waybar)
+   - Shows animated red dots during recording
+   - Desktop: Used to work, now just turns red (no dots)
+   - Laptop: Used to work (this is what laptop had)
+
+**Root cause of drift:**
+- NOT a planned feature difference
+- Happened due to config/code drift between machines
+- Desktop and laptop faced different issues, got different fixes
+
+### Why Desktop Uses `pass` vs Laptop Uses `.env`
+
+**Desktop setup:**
+- Acts as a server, logs in without credentials (keyring-based)
+- Uses `pass api/assemblyai` via `start-gateway.sh`
+- GPG unlocked by keyring automatically
+- Works well with this setup
+
+**Laptop setup:**
+- Requires authentication after suspend/boot
+- Uses `.env` file because:
+  - Can't rely on `pass` if GPG isn't unlocked
+  - Services would fail if started before user authenticates
+- `.env` file works but secrets aren't as secure
+
+**User preference:**
+User WANTS `pass` on laptop too, IF we can make it work with:
+- Proper auth handling after suspend/resume
+- Proper auth handling after boot/login
+- No service failures if GPG locked
+
+### For main1: Decisions Needed
+
+1. **Waveform visualizations:**
+   - Should we fix both (large OSD + small dots)?
+   - Or deprecate one and keep the other?
+   - Need to investigate why large OSD disappears after 1 second
+
+2. **Pass on laptop:**
+   - Can we implement `pass` with GPG unlock prompt?
+   - Desktop already has this in `gateway/internal/auth/gpg.go`
+   - Need to ensure services handle locked GPG gracefully
+
+3. **Branch merge strategy:**
+   - `fix/gateway-service-not-running` (omarchy-voice-typing)
+   - `fix/voice-gateway-dependency` (local-bootstrapping)
+   - Desktop has uncommitted work (latency.go, web_handlers.go, etc.)
+
+### Pending Fixes
+
+1. [ ] Fix large mic-osd overlay (shows 1 sec then disappears)
+2. [ ] Fix small waybar dots animation
+3. [ ] Make audio source fix persistent across reboots
+4. [ ] Consider implementing `pass` on laptop with auth handling
 
 ## Coordination Protocol
 
