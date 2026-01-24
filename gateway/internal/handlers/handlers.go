@@ -243,3 +243,11 @@ func (h *Handler) sendError(w http.ResponseWriter, code int, message string, det
 		Details: details,
 	})
 }
+
+// HealthHandler returns 200 OK if the gateway is running.
+// Used by hyprwhspr-toggle to check gateway availability before recording.
+func (h *Handler) HealthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
