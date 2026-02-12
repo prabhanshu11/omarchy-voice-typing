@@ -1,0 +1,23 @@
+[Unit]
+Description=Local Whisper Transcription Server (offline fallback)
+Documentation=file://%h/Programs/omarchy-voice-typing/local-whisper/BENCHMARKS.md
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/Programs/omarchy-voice-typing/local-whisper/.venv/bin/python \
+    %h/Programs/omarchy-voice-typing/local-whisper/server.py
+Environment=WHISPER_MODEL=distil-large-v3
+Environment=WHISPER_COMPUTE=int8_float32
+Environment=WHISPER_PORT=8766
+Restart=on-failure
+RestartSec=10
+WorkingDirectory=%h/Programs/omarchy-voice-typing/local-whisper
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=local-whisper
+
+[Install]
+WantedBy=default.target
