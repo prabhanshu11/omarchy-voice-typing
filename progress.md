@@ -21,8 +21,5 @@
 ## Active Tasks
 *(None currently active)*
 
-## Next Steps
-- Implement streaming (WebSocket) support (future scope).
-
 ## Notes
 - Replacements config format: List of objects with `from` (list of strings) and `to` (target string). Gateway will flatten this if API requires 1:1.
