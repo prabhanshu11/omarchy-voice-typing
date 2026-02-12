@@ -44,7 +44,7 @@ if _nvidia_paths:
 
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "distil-large-v3")
 WHISPER_COMPUTE = os.environ.get("WHISPER_COMPUTE", "int8_float32")
-WHISPER_PORT = int(os.environ.get("WHISPER_PORT", "8766"))
+WHISPER_PORT = int(os.environ.get("WHISPER_PORT", "8767"))
 
 ALLOWED_MODELS = {"distil-large-v3", "base"}
 

@@ -45,7 +45,7 @@ func main() {
 	// Local whisper server URL for offline fallback
 	localWhisperURL := os.Getenv("LOCAL_WHISPER_URL")
 	if localWhisperURL == "" {
-		localWhisperURL = "http://localhost:8766"
+		localWhisperURL = "http://localhost:8767"
 	}
 	log.Printf("Local whisper fallback URL: %s", localWhisperURL)
 
