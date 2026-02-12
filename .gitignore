@@ -8,3 +8,22 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Secrets
+.env
+
+# Compiled Go binaries
+gateway/voice-gateway
+gateway/server
+
+# Audio recordings
+recordings/
+
+# Transcripts
+transcripts/
+
+# Logs
+logs/
+
+# Working notes
+progress_actual.md
