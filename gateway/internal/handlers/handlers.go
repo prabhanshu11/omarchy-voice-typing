@@ -34,6 +34,8 @@ type ErrorResponse struct {
 type Handler struct {
 	AAIClient      *assemblyai.Client
 	CustomSpelling []assemblyai.CustomSpelling
+	DeepgramAPIKey string
+	LocalWhisperURL string // e.g. "http://localhost:8766"
 	clientMutex    sync.Mutex
 }
 

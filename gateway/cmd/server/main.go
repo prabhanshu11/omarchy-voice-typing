@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/prabhanshu/voice-gateway/internal/assemblyai"
@@ -11,22 +15,39 @@ import (
 )
 
 func main() {
-	// Try loading API key from environment first
+	// Load AssemblyAI API key (for REST endpoint)
 	apiKey := os.Getenv("ASSEMBLYAI_API_KEY")
 	if apiKey == "" {
 		apiKey = os.Getenv("ASSEMBLY_API_KEY")
 	}
 
-	// If no API key in environment, try loading from pass (non-blocking check)
 	if apiKey == "" {
-		log.Printf("No API key in environment - will load from pass on first request")
+		log.Printf("No AssemblyAI API key in environment - will load from pass on first REST request")
 	}
 
 	var aaiClient *assemblyai.Client
 	if apiKey != "" {
 		aaiClient = assemblyai.NewClient(apiKey)
-		log.Printf("API key loaded from environment")
+		log.Printf("AssemblyAI API key loaded from environment")
 	}
+
+	// Load Deepgram API key (for streaming WebSocket endpoint)
+	deepgramKey := os.Getenv("DEEPGRAM_API_KEY")
+	if deepgramKey == "" {
+		deepgramKey = loadFromPass("api/deepgram")
+	}
+	if deepgramKey != "" {
+		log.Printf("Deepgram API key loaded")
+	} else {
+		log.Printf("Warning: No Deepgram API key found - streaming endpoint will not work")
+	}
+
+	// Local whisper server URL for offline fallback
+	localWhisperURL := os.Getenv("LOCAL_WHISPER_URL")
+	if localWhisperURL == "" {
+		localWhisperURL = "http://localhost:8766"
+	}
+	log.Printf("Local whisper fallback URL: %s", localWhisperURL)
 
 	replacementsPath := "../config/replacements.json"
 	customSpelling, err := handlers.LoadReplacements(replacementsPath)
@@ -37,11 +58,15 @@ func main() {
 	}
 
 	h := &handlers.Handler{
-		AAIClient:      aaiClient,
-		CustomSpelling: customSpelling,
+		AAIClient:       aaiClient,
+		CustomSpelling:  customSpelling,
+		DeepgramAPIKey:  deepgramKey,
+		LocalWhisperURL: localWhisperURL,
 	}
 
 	http.HandleFunc("/v1/transcribe", h.TranscribeHandler)
+	http.HandleFunc("/v1/realtime", h.RealtimeHandler)
+	http.HandleFunc("/health", healthHandler(localWhisperURL))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -58,4 +83,44 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
+}
+
+// healthHandler returns a handler that reports gateway health and backend availability.
+func healthHandler(localWhisperURL string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		backend := "deepgram"
+
+		// Check if local whisper is available
+		whisperReady := false
+		if localWhisperURL != "" {
+			client := &http.Client{Timeout: 2 * time.Second}
+			resp, err := client.Get(localWhisperURL + "/health")
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					whisperReady = true
+				}
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":         "ok",
+			"backend":        backend,
+			"whisper_ready":  whisperReady,
+			"whisper_url":    localWhisperURL,
+		})
+	}
+}
+
+// loadFromPass attempts to load a secret from pass with a short timeout.
+func loadFromPass(path string) string {
+	cmd := exec.Command("timeout", "2", "pass", path)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = nil
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out.String())
 }
