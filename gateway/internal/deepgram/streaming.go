@@ -1,18 +1,55 @@
 package deepgram
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-const deepgramWSURL = "wss://api.deepgram.com/v1/listen"
+const deepgramHost = "api.deepgram.com"
+
+var (
+	// cachedAddr holds "IP:443" resolved from api.deepgram.com.
+	// Cleared on connection failure so the next attempt re-resolves.
+	cachedAddr   string
+	cachedAddrMu sync.Mutex
+)
+
+// resolveDeepgram returns a cached "IP:443" for api.deepgram.com,
+// doing a fresh DNS lookup only on the first call or after cache invalidation.
+func resolveDeepgram() (string, error) {
+	cachedAddrMu.Lock()
+	if cachedAddr != "" {
+		addr := cachedAddr
+		cachedAddrMu.Unlock()
+		return addr, nil
+	}
+	cachedAddrMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupHost(ctx, deepgramHost)
+	if err != nil {
+		return "", fmt.Errorf("DNS lookup failed for %s: %w", deepgramHost, err)
+	}
+
+	addr := net.JoinHostPort(ips[0], "443")
+	cachedAddrMu.Lock()
+	cachedAddr = addr
+	cachedAddrMu.Unlock()
+	log.Printf("[Deepgram] DNS resolved: %s -> %s (cached)", deepgramHost, addr)
+	return addr, nil
+}
 
 // StreamingClient manages a WebSocket connection to Deepgram's streaming API.
 type StreamingClient struct {
@@ -40,9 +77,15 @@ type Alternative struct {
 }
 
 // Connect opens a WebSocket connection to Deepgram's streaming API.
+// Uses a cached DNS resolution to avoid repeated lookups on flaky networks.
 func Connect(apiKey string, sampleRate int) (*StreamingClient, error) {
 	if sampleRate == 0 {
 		sampleRate = 24000
+	}
+
+	addr, err := resolveDeepgram()
+	if err != nil {
+		return nil, fmt.Errorf("deepgram connect failed: %w", err)
 	}
 
 	params := url.Values{}
@@ -55,13 +98,28 @@ func Connect(apiKey string, sampleRate int) (*StreamingClient, error) {
 	params.Set("smart_format", "true")
 	params.Set("endpointing", "300")
 
-	wsURL := deepgramWSURL + "?" + params.Encode()
+	u := url.URL{
+		Scheme:   "wss",
+		Host:     addr,
+		Path:     "/v1/listen",
+		RawQuery: params.Encode(),
+	}
+
+	dialer := &websocket.Dialer{
+		NetDialContext:   (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+		HandshakeTimeout: 3 * time.Second,
+		TLSClientConfig:  &tls.Config{ServerName: deepgramHost},
+	}
 
 	header := http.Header{}
 	header.Set("Authorization", "Token "+apiKey)
 
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+	conn, resp, err := dialer.Dial(u.String(), header)
 	if err != nil {
+		// Invalidate cache — IP may have changed or become unreachable
+		cachedAddrMu.Lock()
+		cachedAddr = ""
+		cachedAddrMu.Unlock()
 		if resp != nil {
 			return nil, fmt.Errorf("deepgram connect failed (status %d): %w", resp.StatusCode, err)
 		}

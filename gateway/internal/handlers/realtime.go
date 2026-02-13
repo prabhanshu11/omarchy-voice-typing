@@ -97,6 +97,57 @@ func (h *Handler) RealtimeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// recordingLog tracks timing and decisions for a single voice recording.
+type recordingLog struct {
+	id        string    // short ID like "rec-001"
+	startTime time.Time // first audio chunk received
+
+	audioChunks   int     // number of audio append events
+	audioDuration float64 // seconds of audio (computed from buffer size at commit)
+
+	// Connection state at recording start
+	offlineAtStart bool
+
+	// Reconnection attempts during this recording
+	reconnectAttempts int
+	reconnectSuccess  bool
+
+	// Path taken
+	backend string // "deepgram" or "local-whisper" or "none"
+
+	// Timings
+	connectTime    time.Duration // time spent connecting to Deepgram (0 if already connected)
+	transcribeTime time.Duration // time from commit to transcript ready
+	totalTime      time.Duration // first audio chunk to transcript sent to client
+
+	// Result
+	transcriptLen int
+	err           string
+}
+
+// summary returns a single structured log line for this recording.
+func (r *recordingLog) summary() string {
+	parts := []string{
+		fmt.Sprintf("[%s] DONE", r.id),
+		fmt.Sprintf("backend=%s", r.backend),
+		fmt.Sprintf("audio=%.1fs", r.audioDuration),
+		fmt.Sprintf("chunks=%d", r.audioChunks),
+		fmt.Sprintf("connect=%v", r.connectTime.Round(time.Millisecond)),
+		fmt.Sprintf("transcribe=%v", r.transcribeTime.Round(time.Millisecond)),
+		fmt.Sprintf("total=%v", r.totalTime.Round(time.Millisecond)),
+		fmt.Sprintf("transcript_len=%d", r.transcriptLen),
+		fmt.Sprintf("offline_at_start=%v", r.offlineAtStart),
+		fmt.Sprintf("reconnects=%d", r.reconnectAttempts),
+	}
+	if r.reconnectAttempts > 0 {
+		parts = append(parts, fmt.Sprintf("reconnect_success=%v", r.reconnectSuccess))
+	}
+	if r.err != "" {
+		parts = append(parts, fmt.Sprintf("error=%q", r.err))
+	}
+	return strings.Join(parts, " ")
+}
+
 // realtimeSession manages state for a single WebSocket session.
 type realtimeSession struct {
 	clientConn      *websocket.Conn
@@ -124,9 +175,14 @@ type realtimeSession struct {
 	offlineMode     bool
 	offlineModeMu   sync.Mutex
 	lastDeepgramTry time.Time
+	reconnecting    bool // true while async reconnection is in progress
+
+	// Per-recording structured logging
+	currentRec   *recordingLog
+	recordingSeq int // monotonic counter for recording IDs within session
 }
 
-const deepgramRetryInterval = 30 * time.Second
+const deepgramRetryInterval = 5 * time.Second
 
 // connectDeepgram opens a new Deepgram streaming connection and starts the read loop.
 // Returns error if connection fails. Sets offlineMode on failure.
@@ -134,7 +190,15 @@ func (s *realtimeSession) connectDeepgram() error {
 	// Close existing connection if any
 	s.closeDeepgram()
 
+	connectStart := time.Now()
 	client, err := deepgram.Connect(s.deepgramAPIKey, 24000)
+	connectElapsed := time.Since(connectStart)
+
+	// Record connect timing on current recording
+	if s.currentRec != nil {
+		s.currentRec.connectTime += connectElapsed
+	}
+
 	if err != nil {
 		s.offlineModeMu.Lock()
 		s.offlineMode = true
@@ -199,6 +263,54 @@ func (s *realtimeSession) shouldRetryDeepgram() bool {
 		return false
 	}
 	return time.Since(s.lastDeepgramTry) >= deepgramRetryInterval
+}
+
+// tryAsyncReconnect kicks off a background Deepgram reconnection attempt if the retry
+// interval has elapsed and no reconnection is already in progress. Non-blocking: audio
+// processing continues while the reconnection attempt happens in the background.
+// If reconnection succeeds, the next recording (after current commit) will use Deepgram.
+func (s *realtimeSession) tryAsyncReconnect() {
+	s.offlineModeMu.Lock()
+	if s.reconnecting || !s.offlineMode || time.Since(s.lastDeepgramTry) < deepgramRetryInterval {
+		s.offlineModeMu.Unlock()
+		return
+	}
+	s.reconnecting = true
+	s.lastDeepgramTry = time.Now()
+	s.offlineModeMu.Unlock()
+
+	// Capture recording context for the goroutine
+	rec := s.currentRec
+
+	go func() {
+		defer func() {
+			s.offlineModeMu.Lock()
+			s.reconnecting = false
+			s.offlineModeMu.Unlock()
+		}()
+
+		recID := "[bg]"
+		if rec != nil {
+			recID = fmt.Sprintf("[%s]", rec.id)
+			rec.reconnectAttempts++
+		}
+
+		log.Printf("%s Async reconnect probe started", recID)
+		client, err := deepgram.Connect(s.deepgramAPIKey, 24000)
+		if err != nil {
+			log.Printf("%s Async reconnect probe failed: %v", recID, err)
+			return
+		}
+		// Connected! Close this probe connection — the next recording will use a fresh one.
+		client.Close()
+		s.offlineModeMu.Lock()
+		s.offlineMode = false
+		s.offlineModeMu.Unlock()
+		if rec != nil {
+			rec.reconnectSuccess = true
+		}
+		log.Printf("%s Async reconnect probe succeeded — next recording will be online", recID)
+	}()
 }
 
 // closeDeepgram cleanly shuts down the current Deepgram connection.
@@ -268,13 +380,32 @@ func (s *realtimeSession) handleAudioAppend(event realtimeEvent) {
 
 	// Always accumulate audio (needed for both archiving and offline transcription)
 	s.audioMu.Lock()
+	wasEmpty := len(s.audioBuffer) == 0
 	s.audioBuffer = append(s.audioBuffer, pcm...)
 	bufLen := len(s.audioBuffer)
 	s.audioMu.Unlock()
 
-	// If offline, just accumulate — transcription happens at commit time
+	// Start a new recording log on first chunk
+	if wasEmpty {
+		s.recordingSeq++
+		s.currentRec = &recordingLog{
+			id:             fmt.Sprintf("rec-%03d", s.recordingSeq),
+			startTime:      time.Now(),
+			offlineAtStart: s.isOffline(),
+		}
+		log.Printf("[%s] Recording started (offline=%v)", s.currentRec.id, s.currentRec.offlineAtStart)
+	}
+
+	// Count chunks
+	if s.currentRec != nil {
+		s.currentRec.audioChunks++
+	}
+
+	// If offline, kick off async reconnection and accumulate audio for whisper fallback.
+	// Never block audio processing — worst case we use local whisper at commit time.
 	if s.isOffline() {
-		if bufLen%(48000*2) < len(pcm) { // log roughly every 2s of audio (48000 samples * 2 bytes)
+		s.tryAsyncReconnect()
+		if bufLen%(48000*2) < len(pcm) {
 			log.Printf("[Realtime] Offline: accumulating audio, buffer=%d bytes (%.1fs)", bufLen, float64(bufLen)/48000.0)
 		}
 		return
@@ -282,7 +413,6 @@ func (s *realtimeSession) handleAudioAppend(event realtimeEvent) {
 
 	// Lazily reconnect to Deepgram if needed (after a previous commit closed it)
 	if s.deepgramClient == nil {
-		// Try to reconnect (or retry if enough time has passed)
 		log.Printf("[Realtime] Reconnecting to Deepgram for new utterance")
 		if err := s.connectDeepgram(); err != nil {
 			log.Printf("[Realtime] Failed to reconnect to Deepgram: %v (will use offline fallback)", err)
@@ -307,10 +437,19 @@ func (s *realtimeSession) handleAudioCommit() {
 	copy(audioData, s.audioBuffer)
 	s.audioMu.Unlock()
 
-	log.Printf("[Realtime] Audio buffer: %d bytes (%.1fs at 24kHz)", len(audioData), float64(len(audioData))/48000.0)
+	audioDuration := float64(len(audioData)) / 48000.0
+	log.Printf("[Realtime] Audio buffer: %d bytes (%.1fs at 24kHz)", len(audioData), audioDuration)
+
+	// Update recording log with audio duration
+	rec := s.currentRec
+	if rec != nil {
+		rec.audioDuration = audioDuration
+	}
 
 	var fullTranscript string
 	var backend string
+
+	transcribeStart := time.Now()
 
 	if offline || dgNil {
 		// OFFLINE PATH: close any stale Deepgram connection before local transcription
@@ -322,6 +461,8 @@ func (s *realtimeSession) handleAudioCommit() {
 		log.Printf("[Realtime] Taking ONLINE path (Deepgram)")
 		fullTranscript, backend = s.transcribeDeepgram()
 	}
+
+	transcribeElapsed := time.Since(transcribeStart)
 
 	// Apply custom spelling replacements
 	fullTranscript = applySpellingReplacements(fullTranscript, s.spellings)
@@ -336,22 +477,27 @@ func (s *realtimeSession) handleAudioCommit() {
 		"transcript":    fullTranscript,
 	})
 
-	// Clear audio buffer
+	// Emit structured recording summary
+	if rec != nil {
+		rec.backend = backend
+		rec.transcribeTime = transcribeElapsed
+		rec.totalTime = time.Since(rec.startTime)
+		rec.transcriptLen = len(fullTranscript)
+		log.Printf("%s", rec.summary())
+	}
+
+	// Clear audio buffer and recording log
 	s.audioMu.Lock()
 	s.audioBuffer = nil
 	s.audioMu.Unlock()
+	s.currentRec = nil
 
 	// Archive audio and transcript in background
 	go archiveRecording(audioData, fullTranscript, backend)
 
-	// If offline, periodically check if Deepgram is back
-	if s.isOffline() && s.shouldRetryDeepgram() {
-		go func() {
-			log.Printf("[Realtime] Retrying Deepgram connection...")
-			if err := s.connectDeepgram(); err != nil {
-				log.Printf("[Realtime] Deepgram still unavailable: %v", err)
-			}
-		}()
+	// If offline, try async reconnection so next recording can use Deepgram
+	if s.isOffline() {
+		s.tryAsyncReconnect()
 	}
 }
 
@@ -476,10 +622,11 @@ func buildWAV(pcmData []byte, sampleRate int) []byte {
 func (s *realtimeSession) handleAudioClear() {
 	log.Printf("[Realtime] input_audio_buffer.clear received")
 
-	// Reset audio archive buffer
+	// Reset audio archive buffer and recording log
 	s.audioMu.Lock()
 	s.audioBuffer = nil
 	s.audioMu.Unlock()
+	s.currentRec = nil
 
 	// Close existing Deepgram connection (will reconnect lazily on first append)
 	s.closeDeepgram()
