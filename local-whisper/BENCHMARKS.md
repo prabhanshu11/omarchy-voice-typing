@@ -74,3 +74,30 @@ All tests run with `--device cuda --compute int8_float32` on the MX330.
 - `medium` — OOMs on MX330
 - `small/float32` — 1.31x RTF and 1365 MB VRAM, worse than distil-large-v3 at similar speed
 - Any `float16` — not supported on Pascal
+
+## CTranslate2 JIT Warmup
+
+CTranslate2 JIT-compiles CUDA kernels on the first inference call. Model loading only puts weights into VRAM — compute kernels are compiled lazily.
+
+**Impact without warmup**: First transcription takes dramatically longer than subsequent ones.
+
+| Model | First-call time (4s audio) | After warmup |
+|-------|---------------------------|-------------|
+| `distil-large-v3` | ~41s | ~5s |
+| `base` | ~10s (estimated) | <1s |
+
+**Warmup solution**: Transcribe 1s of silence at startup to force kernel compilation.
+
+| Model | Warmup time | Notes |
+|-------|------------|-------|
+| `base` | 4.0s | Measured. Default model. |
+| `distil-large-v3` | untested | Expected longer due to larger model. |
+
+The warmup runs in a background thread after model loading completes. The HTTP server accepts connections immediately — requests during warmup get a 503 "model not ready" response.
+
+**Default model changed to `base`** (from `distil-large-v3`) because:
+1. Warmup completes in 4s vs unknown longer time for distil-large-v3
+2. Transcription is sub-second for typical voice clips (3-10s)
+3. VRAM usage is minimal (225 MB vs 1089 MB)
+4. Accuracy is sufficient for voice typing use case
+5. Can switch to distil-large-v3 at runtime via `GET /switch?model=distil-large-v3`

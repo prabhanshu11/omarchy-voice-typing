@@ -42,7 +42,7 @@ if _nvidia_paths:
         os.execvp(sys.executable, [sys.executable] + sys.argv)
 
 
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "distil-large-v3")
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
 WHISPER_COMPUTE = os.environ.get("WHISPER_COMPUTE", "int8_float32")
 WHISPER_PORT = int(os.environ.get("WHISPER_PORT", "8767"))
 
@@ -196,9 +196,26 @@ class WhisperHandler(BaseHTTPRequestHandler):
         print(f"[whisper-http] {args[0]}")
 
 
+def warmup_model():
+    """Warmup: transcribe 1s of silence to JIT-compile CUDA kernels."""
+    import numpy as np
+    global _status
+    while _status != "ready":
+        time.sleep(0.5)
+    print("[whisper] Warming up model (JIT kernel compilation)...")
+    t0 = time.perf_counter()
+    silence = np.zeros(16000, dtype=np.float32)  # 1s at 16kHz
+    with _model_lock:
+        segments, _ = _model.transcribe(silence, beam_size=5)
+        _ = list(segments)  # force evaluation
+    print(f"[whisper] Warmup complete in {time.perf_counter() - t0:.1f}s")
+
+
 def main():
     # Load model in background so server starts accepting connections immediately
     threading.Thread(target=load_model, args=(WHISPER_MODEL, WHISPER_COMPUTE), daemon=True).start()
+    # Warmup after model loads to JIT-compile CUDA kernels
+    threading.Thread(target=warmup_model, daemon=True).start()
 
     server = HTTPServer(("0.0.0.0", WHISPER_PORT), WhisperHandler)
     print(f"[whisper] Server listening on :{WHISPER_PORT}")

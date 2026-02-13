@@ -7,9 +7,10 @@ After=network.target
 Type=simple
 ExecStart=%h/Programs/omarchy-voice-typing/local-whisper/.venv/bin/python \
     %h/Programs/omarchy-voice-typing/local-whisper/server.py
-Environment=WHISPER_MODEL=distil-large-v3
+Environment=WHISPER_MODEL=base
 Environment=WHISPER_COMPUTE=int8_float32
 Environment=WHISPER_PORT=8767
+Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=10
 WorkingDirectory=%h/Programs/omarchy-voice-typing/local-whisper

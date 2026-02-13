@@ -214,11 +214,13 @@ func (s *realtimeSession) closeDeepgram() {
 }
 
 func (s *realtimeSession) handleSessionUpdate() {
-	log.Printf("[Realtime] session.update received")
+	offline := s.isOffline()
+	dgNil := s.deepgramClient == nil
+	log.Printf("[Realtime] session.update received (offline=%v, deepgramClient==nil=%v)", offline, dgNil)
 	s.sessionReady = true
 
 	// Try to connect to Deepgram for the initial session
-	if s.deepgramClient == nil && !s.isOffline() {
+	if dgNil && !offline {
 		if err := s.connectDeepgram(); err != nil {
 			log.Printf("[Realtime] Failed to connect to Deepgram: %v", err)
 			// Don't send error to client — we'll fall back to local whisper
@@ -267,10 +269,14 @@ func (s *realtimeSession) handleAudioAppend(event realtimeEvent) {
 	// Always accumulate audio (needed for both archiving and offline transcription)
 	s.audioMu.Lock()
 	s.audioBuffer = append(s.audioBuffer, pcm...)
+	bufLen := len(s.audioBuffer)
 	s.audioMu.Unlock()
 
 	// If offline, just accumulate — transcription happens at commit time
 	if s.isOffline() {
+		if bufLen%(48000*2) < len(pcm) { // log roughly every 2s of audio (48000 samples * 2 bytes)
+			log.Printf("[Realtime] Offline: accumulating audio, buffer=%d bytes (%.1fs)", bufLen, float64(bufLen)/48000.0)
+		}
 		return
 	}
 
@@ -291,7 +297,9 @@ func (s *realtimeSession) handleAudioAppend(event realtimeEvent) {
 }
 
 func (s *realtimeSession) handleAudioCommit() {
-	log.Printf("[Realtime] input_audio_buffer.commit received")
+	offline := s.isOffline()
+	dgNil := s.deepgramClient == nil
+	log.Printf("[Realtime] input_audio_buffer.commit received (offline=%v, deepgramClient==nil: %v)", offline, dgNil)
 
 	// Get audio data for potential local transcription
 	s.audioMu.Lock()
@@ -299,14 +307,19 @@ func (s *realtimeSession) handleAudioCommit() {
 	copy(audioData, s.audioBuffer)
 	s.audioMu.Unlock()
 
+	log.Printf("[Realtime] Audio buffer: %d bytes (%.1fs at 24kHz)", len(audioData), float64(len(audioData))/48000.0)
+
 	var fullTranscript string
 	var backend string
 
-	if s.isOffline() || s.deepgramClient == nil {
-		// OFFLINE PATH: transcribe locally
+	if offline || dgNil {
+		// OFFLINE PATH: close any stale Deepgram connection before local transcription
+		log.Printf("[Realtime] Taking OFFLINE path (offline=%v, deepgramClient==nil=%v, whisperURL=%q)", offline, dgNil, s.localWhisperURL)
+		s.closeDeepgram()
 		fullTranscript, backend = s.transcribeLocal(audioData)
 	} else {
 		// ONLINE PATH: finalize Deepgram and collect transcript
+		log.Printf("[Realtime] Taking ONLINE path (Deepgram)")
 		fullTranscript, backend = s.transcribeDeepgram()
 	}
 
@@ -372,52 +385,58 @@ func (s *realtimeSession) transcribeDeepgram() (string, string) {
 // transcribeLocal sends accumulated audio to the local whisper server.
 func (s *realtimeSession) transcribeLocal(audioData []byte) (string, string) {
 	if s.localWhisperURL == "" {
-		log.Printf("[Realtime] No local whisper URL configured, returning empty transcript")
+		log.Printf("[Whisper] FAIL: No local whisper URL configured (localWhisperURL is empty)")
 		return "", "none"
 	}
 
 	if len(audioData) == 0 {
+		log.Printf("[Whisper] FAIL: audioData is empty (0 bytes) — nothing to transcribe")
 		return "", "local-whisper"
 	}
 
 	// Build WAV in memory
 	wavBuf := buildWAV(audioData, 24000)
+	log.Printf("[Whisper] Built WAV: %d bytes (PCM: %d bytes, %.1fs audio at 24kHz)", len(wavBuf), len(audioData), float64(len(audioData))/48000.0)
 
 	// POST to local whisper server
 	url := s.localWhisperURL + "/transcribe"
-	log.Printf("[Whisper] Sending %d bytes of audio to %s", len(wavBuf), url)
+	log.Printf("[Whisper] POSTing to %s ...", url)
+	t0 := time.Now()
 
 	client := &http.Client{Timeout: 120 * time.Second}
 	resp, err := client.Post(url, "audio/wav", bytes.NewReader(wavBuf))
+	elapsed := time.Since(t0)
 	if err != nil {
-		log.Printf("[Whisper] POST failed: %v", err)
+		log.Printf("[Whisper] FAIL: POST to %s failed after %v: %v", url, elapsed, err)
 		return "", "local-whisper"
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("[Whisper] Failed to read response: %v", err)
+		log.Printf("[Whisper] FAIL: reading response body failed after %v: %v", elapsed, err)
 		return "", "local-whisper"
 	}
 
+	log.Printf("[Whisper] Response: status=%d, body=%s, roundtrip=%v", resp.StatusCode, string(body), elapsed)
+
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[Whisper] Server returned %d: %s", resp.StatusCode, string(body))
+		log.Printf("[Whisper] FAIL: non-200 status %d from whisper server", resp.StatusCode)
 		return "", "local-whisper"
 	}
 
 	var result struct {
-		Text  string  `json:"text"`
-		Model string  `json:"model"`
-		Duration float64 `json:"duration"`
+		Text           string  `json:"text"`
+		Model          string  `json:"model"`
+		Duration       float64 `json:"duration"`
 		TranscribeTime float64 `json:"transcribe_time"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		log.Printf("[Whisper] Failed to parse response: %v", err)
+		log.Printf("[Whisper] FAIL: JSON parse error: %v (body was: %s)", err, string(body))
 		return "", "local-whisper"
 	}
 
-	log.Printf("[Whisper] Transcribed in %.2fs (audio: %.1fs, model: %s)", result.TranscribeTime, result.Duration, result.Model)
+	log.Printf("[Whisper] OK: text=%q, model=%s, audio=%.1fs, transcribe=%.2fs, roundtrip=%v", result.Text, result.Model, result.Duration, result.TranscribeTime, elapsed)
 	return result.Text, "local-whisper"
 }
 
