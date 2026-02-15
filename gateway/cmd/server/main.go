@@ -49,6 +49,14 @@ func main() {
 	}
 	log.Printf("Local whisper fallback URL: %s", localWhisperURL)
 
+	// LAN whisper server URL (e.g., desktop GPU via Tailscale)
+	lanWhisperURL := os.Getenv("LAN_WHISPER_URL")
+	if lanWhisperURL != "" {
+		log.Printf("LAN whisper fallback URL: %s", lanWhisperURL)
+	} else {
+		log.Printf("LAN whisper fallback: not configured (set LAN_WHISPER_URL to enable)")
+	}
+
 	replacementsPath := "../config/replacements.json"
 	customSpelling, err := handlers.LoadReplacements(replacementsPath)
 	if err != nil {
@@ -62,11 +70,12 @@ func main() {
 		CustomSpelling:  customSpelling,
 		DeepgramAPIKey:  deepgramKey,
 		LocalWhisperURL: localWhisperURL,
+		LANWhisperURL:   lanWhisperURL,
 	}
 
 	http.HandleFunc("/v1/transcribe", h.TranscribeHandler)
 	http.HandleFunc("/v1/realtime", h.RealtimeHandler)
-	http.HandleFunc("/health", healthHandler(localWhisperURL))
+	http.HandleFunc("/health", healthHandler(localWhisperURL, lanWhisperURL))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -86,14 +95,14 @@ func main() {
 }
 
 // healthHandler returns a handler that reports gateway health and backend availability.
-func healthHandler(localWhisperURL string) http.HandlerFunc {
+func healthHandler(localWhisperURL, lanWhisperURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		backend := "deepgram"
+		client := &http.Client{Timeout: 2 * time.Second}
 
 		// Check if local whisper is available
 		whisperReady := false
 		if localWhisperURL != "" {
-			client := &http.Client{Timeout: 2 * time.Second}
 			resp, err := client.Get(localWhisperURL + "/health")
 			if err == nil {
 				resp.Body.Close()
@@ -103,12 +112,26 @@ func healthHandler(localWhisperURL string) http.HandlerFunc {
 			}
 		}
 
+		// Check if LAN whisper is available
+		lanWhisperReady := false
+		if lanWhisperURL != "" {
+			resp, err := client.Get(lanWhisperURL + "/health")
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					lanWhisperReady = true
+				}
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"status":         "ok",
-			"backend":        backend,
-			"whisper_ready":  whisperReady,
-			"whisper_url":    localWhisperURL,
+			"status":            "ok",
+			"backend":           backend,
+			"whisper_ready":     whisperReady,
+			"whisper_url":       localWhisperURL,
+			"lan_whisper_ready": lanWhisperReady,
+			"lan_whisper_url":   lanWhisperURL,
 		})
 	}
 }

@@ -60,6 +60,7 @@ func (h *Handler) RealtimeHandler(w http.ResponseWriter, r *http.Request) {
 		clientConn:      conn,
 		deepgramAPIKey:  h.DeepgramAPIKey,
 		localWhisperURL: h.LocalWhisperURL,
+		lanWhisperURL:   h.LANWhisperURL,
 		spellings:       h.CustomSpelling,
 	}
 	defer session.cleanup()
@@ -154,6 +155,7 @@ type realtimeSession struct {
 	clientMu        sync.Mutex
 	deepgramAPIKey  string
 	localWhisperURL string
+	lanWhisperURL   string
 	deepgramClient  *deepgram.StreamingClient
 	spellings       []assemblyai.CustomSpelling
 
@@ -453,9 +455,17 @@ func (s *realtimeSession) handleAudioCommit() {
 
 	if offline || dgNil {
 		// OFFLINE PATH: close any stale Deepgram connection before local transcription
-		log.Printf("[Realtime] Taking OFFLINE path (offline=%v, deepgramClient==nil=%v, whisperURL=%q)", offline, dgNil, s.localWhisperURL)
+		log.Printf("[Realtime] Taking OFFLINE path (offline=%v, deepgramClient==nil=%v, lanWhisperURL=%q, localWhisperURL=%q)", offline, dgNil, s.lanWhisperURL, s.localWhisperURL)
 		s.closeDeepgram()
-		fullTranscript, backend = s.transcribeLocal(audioData)
+
+		// Try LAN whisper first (e.g., desktop GPU via Tailscale)
+		if s.lanWhisperURL != "" {
+			fullTranscript, backend = s.transcribeLAN(audioData)
+		}
+		// Fall back to local whisper if LAN failed or unavailable
+		if fullTranscript == "" {
+			fullTranscript, backend = s.transcribeLocal(audioData)
+		}
 	} else {
 		// ONLINE PATH: finalize Deepgram and collect transcript
 		log.Printf("[Realtime] Taking ONLINE path (Deepgram)")
@@ -584,6 +594,61 @@ func (s *realtimeSession) transcribeLocal(audioData []byte) (string, string) {
 
 	log.Printf("[Whisper] OK: text=%q, model=%s, audio=%.1fs, transcribe=%.2fs, roundtrip=%v", result.Text, result.Model, result.Duration, result.TranscribeTime, elapsed)
 	return result.Text, "local-whisper"
+}
+
+// transcribeLAN sends accumulated audio to a remote whisper server on the LAN (e.g., desktop GPU via Tailscale).
+func (s *realtimeSession) transcribeLAN(audioData []byte) (string, string) {
+	if s.lanWhisperURL == "" {
+		return "", ""
+	}
+
+	if len(audioData) == 0 {
+		log.Printf("[LAN-Whisper] FAIL: audioData is empty (0 bytes)")
+		return "", ""
+	}
+
+	// Build WAV in memory
+	wavBuf := buildWAV(audioData, 24000)
+	log.Printf("[LAN-Whisper] Built WAV: %d bytes (PCM: %d bytes, %.1fs audio at 24kHz)", len(wavBuf), len(audioData), float64(len(audioData))/48000.0)
+
+	// POST to LAN whisper server
+	url := s.lanWhisperURL + "/transcribe"
+	log.Printf("[LAN-Whisper] POSTing to %s ...", url)
+	t0 := time.Now()
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Post(url, "audio/wav", bytes.NewReader(wavBuf))
+	elapsed := time.Since(t0)
+	if err != nil {
+		log.Printf("[LAN-Whisper] FAIL: POST to %s failed after %v: %v", url, elapsed, err)
+		return "", ""
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("[LAN-Whisper] FAIL: reading response body failed after %v: %v", elapsed, err)
+		return "", ""
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[LAN-Whisper] FAIL: non-200 status %d from LAN whisper (body=%s, roundtrip=%v)", resp.StatusCode, string(body), elapsed)
+		return "", ""
+	}
+
+	var result struct {
+		Text           string  `json:"text"`
+		Model          string  `json:"model"`
+		Duration       float64 `json:"duration"`
+		TranscribeTime float64 `json:"transcribe_time"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		log.Printf("[LAN-Whisper] FAIL: JSON parse error: %v (body was: %s)", err, string(body))
+		return "", ""
+	}
+
+	log.Printf("[LAN-Whisper] OK: text=%q, model=%s, audio=%.1fs, transcribe=%.2fs, roundtrip=%v", result.Text, result.Model, result.Duration, result.TranscribeTime, elapsed)
+	return result.Text, "lan-whisper"
 }
 
 // buildWAV creates a WAV file in memory from PCM16 audio data.

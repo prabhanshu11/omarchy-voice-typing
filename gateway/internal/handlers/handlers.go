@@ -35,7 +35,8 @@ type Handler struct {
 	AAIClient      *assemblyai.Client
 	CustomSpelling []assemblyai.CustomSpelling
 	DeepgramAPIKey string
-	LocalWhisperURL string // e.g. "http://localhost:8766"
+	LocalWhisperURL string // e.g. "http://localhost:8767"
+	LANWhisperURL   string // Remote whisper on LAN (e.g., desktop via Tailscale)
 	clientMutex    sync.Mutex
 }
 
