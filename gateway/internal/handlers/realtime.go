@@ -29,6 +29,9 @@ type realtimeEvent struct {
 	Type    string          `json:"type"`
 	Session json.RawMessage `json:"session,omitempty"`
 	Audio   string          `json:"audio,omitempty"`
+	// session.event fields (Python→Gateway telemetry)
+	Layer string `json:"layer,omitempty"`
+	Event string `json:"event,omitempty"`
 }
 
 // RealtimeHandler handles WebSocket connections using the OpenAI Realtime protocol
@@ -92,6 +95,8 @@ func (h *Handler) RealtimeHandler(w http.ResponseWriter, r *http.Request) {
 			session.handleAudioCommit()
 		case "input_audio_buffer.clear":
 			session.handleAudioClear()
+		case "session.event":
+			session.handleSessionEvent(event)
 		default:
 			log.Printf("[Realtime] Unknown event type: %s", event.Type)
 		}
@@ -149,6 +154,181 @@ func (r *recordingLog) summary() string {
 	return strings.Join(parts, " ")
 }
 
+// --- Session logging ---
+
+// sessionEvent represents a single timestamped event in a recording session.
+type sessionEvent struct {
+	Timestamp time.Time
+	Elapsed   time.Duration // from session start
+	Layer     string        // CONTROL, PYTHON, GATEWAY, AUDIO, BT-SWITCH, DEEPGRAM
+	Event     string
+}
+
+// sessionLog accumulates the full timeline for a recording session.
+type sessionLog struct {
+	id        string
+	startTime time.Time
+	endTime   time.Time
+	events    []sessionEvent
+
+	// Speed profiling (milliseconds, -1 = never)
+	dgConnectMs  int64
+	firstAudioMs int64
+	transcribeMs int64
+	totalMs      int64
+
+	// Audio chain counters
+	pyChunks int
+	gwBytes  int
+
+	// Disposition
+	status     string // "OK", "FAILED", "ABORTED"
+	transcript string
+	wavPath    string
+}
+
+// addEvent appends a timestamped event to the session log.
+func (sl *sessionLog) addEvent(layer, event string) {
+	now := time.Now()
+	sl.events = append(sl.events, sessionEvent{
+		Timestamp: now,
+		Elapsed:   now.Sub(sl.startTime),
+		Layer:     layer,
+		Event:     event,
+	})
+}
+
+// sessionLogDir is the directory for session log files.
+// Resolved once at startup relative to the gateway working directory.
+var sessionLogDir string
+
+func init() {
+	// Default: ../logs/sessions/ (relative to gateway binary, which is in gateway/)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		sessionLogDir = "../logs/sessions"
+	} else {
+		sessionLogDir = filepath.Join(home, "Programs", "omarchy-voice-typing", "logs", "sessions")
+	}
+}
+
+// writeSessionLog writes the session log file to disk.
+func (sl *sessionLog) writeToFile() {
+	if sl == nil || sl.id == "" {
+		return
+	}
+
+	if err := os.MkdirAll(sessionLogDir, 0755); err != nil {
+		log.Printf("[SessionLog] Failed to create log dir: %v", err)
+		return
+	}
+
+	filename := fmt.Sprintf("%s_%s.log", sl.startTime.Format("20060102_150405"), sl.id)
+	path := filepath.Join(sessionLogDir, filename)
+
+	var b strings.Builder
+
+	// Header
+	fmt.Fprintf(&b, "=== SESSION %s ===\n", sl.id)
+	fmt.Fprintf(&b, "Started:     %s\n", sl.startTime.Format("2006-01-02 15:04:05.000"))
+	if !sl.endTime.IsZero() {
+		endNote := ""
+		if sl.status == "ABORTED" {
+			endNote = " (ABORTED by clear)"
+		}
+		fmt.Fprintf(&b, "Ended:       %s%s\n", sl.endTime.Format("2006-01-02 15:04:05.000"), endNote)
+		fmt.Fprintf(&b, "Duration:    %.1fs\n", sl.endTime.Sub(sl.startTime).Seconds())
+	}
+	fmt.Fprintf(&b, "\n")
+
+	// Timeline
+	fmt.Fprintf(&b, "--- TIMELINE ---\n")
+	for _, e := range sl.events {
+		fmt.Fprintf(&b, "T+%.3fs     [%-12s] %s\n", e.Elapsed.Seconds(), e.Layer, e.Event)
+	}
+	fmt.Fprintf(&b, "\n")
+
+	// Speed profile
+	fmt.Fprintf(&b, "--- SPEED PROFILE ---\n")
+	if sl.dgConnectMs >= 0 {
+		fmt.Fprintf(&b, "Deepgram connect:     %dms\n", sl.dgConnectMs)
+	} else {
+		fmt.Fprintf(&b, "Deepgram connect:     N/A\n")
+	}
+	if sl.firstAudioMs >= 0 {
+		fmt.Fprintf(&b, "First audio to GW:    %dms\n", sl.firstAudioMs)
+	} else {
+		fmt.Fprintf(&b, "First audio to GW:    NEVER\n")
+	}
+	if sl.transcribeMs >= 0 {
+		fmt.Fprintf(&b, "Transcription:        %dms\n", sl.transcribeMs)
+	} else {
+		fmt.Fprintf(&b, "Transcription:        N/A\n")
+	}
+	if sl.totalMs >= 0 {
+		fmt.Fprintf(&b, "Total (start→text):   %dms\n", sl.totalMs)
+	} else {
+		fmt.Fprintf(&b, "Total (start→text):   N/A\n")
+	}
+	fmt.Fprintf(&b, "\n")
+
+	// Audio chain
+	fmt.Fprintf(&b, "--- AUDIO CHAIN ---\n")
+	fmt.Fprintf(&b, "Python WS chunks:     %d\n", sl.pyChunks)
+	fmt.Fprintf(&b, "Gateway bytes:        %d\n", sl.gwBytes)
+	fmt.Fprintf(&b, "\n")
+
+	// Data flow diagram
+	fmt.Fprintf(&b, "--- DATA FLOW ---\n")
+	stages := []struct {
+		name string
+		ok   bool
+	}{
+		{"Toggle", true}, // If we got here, toggle worked
+		{"Python WS", sl.pyChunks > 0},
+		{"Gateway", sl.gwBytes > 0},
+		{"Transcribe", sl.transcript != ""},
+	}
+	var names, checks []string
+	for _, s := range stages {
+		padded := fmt.Sprintf("%-12s", s.name)
+		names = append(names, padded)
+		if s.ok {
+			checks = append(checks, fmt.Sprintf("%-12s", "OK"))
+		} else {
+			checks = append(checks, fmt.Sprintf("%-12s", "FAIL"))
+		}
+	}
+	fmt.Fprintf(&b, "%s\n", strings.Join(names, " -> "))
+	fmt.Fprintf(&b, "%s\n", strings.Join(checks, "    "))
+	fmt.Fprintf(&b, "\n")
+
+	// Disposition
+	fmt.Fprintf(&b, "--- DISPOSITION ---\n")
+	fmt.Fprintf(&b, "Status:       %s\n", sl.status)
+	if sl.wavPath != "" {
+		fmt.Fprintf(&b, "Archived WAV: %s\n", sl.wavPath)
+	} else {
+		fmt.Fprintf(&b, "Archived WAV: (none)\n")
+	}
+	if sl.transcript != "" {
+		tLen := len(sl.transcript)
+		preview := sl.transcript
+		if tLen > 80 {
+			preview = sl.transcript[:80] + "..."
+		}
+		fmt.Fprintf(&b, "Transcript:   %q (%d chars)\n", preview, tLen)
+	} else {
+		fmt.Fprintf(&b, "Transcript:   (none)\n")
+	}
+
+	if err := os.WriteFile(path, []byte(b.String()), 0644); err != nil {
+		log.Printf("[SessionLog] Failed to write %s: %v", path, err)
+	} else {
+		log.Printf("[SessionLog] Written %s", path)
+	}
+}
+
 // realtimeSession manages state for a single WebSocket session.
 type realtimeSession struct {
 	clientConn      *websocket.Conn
@@ -182,6 +362,9 @@ type realtimeSession struct {
 	// Per-recording structured logging
 	currentRec   *recordingLog
 	recordingSeq int // monotonic counter for recording IDs within session
+
+	// Per-recording session log (comprehensive timeline + diagnostics)
+	currentSessLog *sessionLog
 }
 
 const deepgramRetryInterval = 5 * time.Second
@@ -207,6 +390,10 @@ func (s *realtimeSession) connectDeepgram() error {
 		s.lastDeepgramTry = time.Now()
 		s.offlineModeMu.Unlock()
 		log.Printf("[Realtime] Deepgram unavailable, switching to offline mode: %v", err)
+		if sl := s.currentSessLog; sl != nil {
+			sl.addEvent("DEEPGRAM", fmt.Sprintf("connect FAILED after %v: %v", connectElapsed, err))
+			sl.dgConnectMs = -1
+		}
 		return err
 	}
 
@@ -218,6 +405,11 @@ func (s *realtimeSession) connectDeepgram() error {
 
 	if wasOffline {
 		log.Printf("[Realtime] Deepgram connectivity restored, back online")
+	}
+
+	if sl := s.currentSessLog; sl != nil {
+		sl.addEvent("DEEPGRAM", fmt.Sprintf("connected in %v", connectElapsed))
+		sl.dgConnectMs = connectElapsed.Milliseconds()
 	}
 
 	s.deepgramClient = client
@@ -390,17 +582,36 @@ func (s *realtimeSession) handleAudioAppend(event realtimeEvent) {
 	// Start a new recording log on first chunk
 	if wasEmpty {
 		s.recordingSeq++
+		now := time.Now()
+		recID := fmt.Sprintf("rec-%03d", s.recordingSeq)
 		s.currentRec = &recordingLog{
-			id:             fmt.Sprintf("rec-%03d", s.recordingSeq),
-			startTime:      time.Now(),
+			id:             recID,
+			startTime:      now,
 			offlineAtStart: s.isOffline(),
 		}
-		log.Printf("[%s] Recording started (offline=%v)", s.currentRec.id, s.currentRec.offlineAtStart)
+		s.currentSessLog = &sessionLog{
+			id:           recID,
+			startTime:    now,
+			dgConnectMs:  -1,
+			firstAudioMs: -1,
+			transcribeMs: -1,
+			totalMs:      -1,
+		}
+		s.currentSessLog.addEvent("GATEWAY", fmt.Sprintf("%s started (offline=%v)", recID, s.currentRec.offlineAtStart))
+		log.Printf("[%s] Recording started (offline=%v)", recID, s.currentRec.offlineAtStart)
 	}
 
-	// Count chunks
+	// Count chunks and track audio flow in session log
 	if s.currentRec != nil {
 		s.currentRec.audioChunks++
+	}
+	if sl := s.currentSessLog; sl != nil {
+		sl.pyChunks++
+		sl.gwBytes += len(pcm)
+		if sl.firstAudioMs == -1 {
+			sl.firstAudioMs = time.Since(sl.startTime).Milliseconds()
+			sl.addEvent("GATEWAY", fmt.Sprintf("first audio chunk: %d bytes", len(pcm)))
+		}
 	}
 
 	// If offline, kick off async reconnection and accumulate audio for whisper fallback.
@@ -433,6 +644,11 @@ func (s *realtimeSession) handleAudioCommit() {
 	dgNil := s.deepgramClient == nil
 	log.Printf("[Realtime] input_audio_buffer.commit received (offline=%v, deepgramClient==nil: %v)", offline, dgNil)
 
+	sl := s.currentSessLog
+	if sl != nil {
+		sl.addEvent("GATEWAY", "commit received")
+	}
+
 	// Get audio data for potential local transcription
 	s.audioMu.Lock()
 	audioData := make([]byte, len(s.audioBuffer))
@@ -456,6 +672,9 @@ func (s *realtimeSession) handleAudioCommit() {
 	if offline || dgNil {
 		// OFFLINE PATH: close any stale Deepgram connection before local transcription
 		log.Printf("[Realtime] Taking OFFLINE path (offline=%v, deepgramClient==nil=%v, lanWhisperURL=%q, localWhisperURL=%q)", offline, dgNil, s.lanWhisperURL, s.localWhisperURL)
+		if sl != nil {
+			sl.addEvent("GATEWAY", "taking OFFLINE transcription path")
+		}
 		s.closeDeepgram()
 
 		// Try LAN whisper first (e.g., desktop GPU via Tailscale)
@@ -469,6 +688,9 @@ func (s *realtimeSession) handleAudioCommit() {
 	} else {
 		// ONLINE PATH: finalize Deepgram and collect transcript
 		log.Printf("[Realtime] Taking ONLINE path (Deepgram)")
+		if sl != nil {
+			sl.addEvent("GATEWAY", "taking ONLINE transcription path (Deepgram)")
+		}
 		fullTranscript, backend = s.transcribeDeepgram()
 	}
 
@@ -496,11 +718,29 @@ func (s *realtimeSession) handleAudioCommit() {
 		log.Printf("%s", rec.summary())
 	}
 
+	// Write session log before clearing state
+	if sl != nil {
+		sl.endTime = time.Now()
+		sl.transcribeMs = transcribeElapsed.Milliseconds()
+		sl.totalMs = sl.endTime.Sub(sl.startTime).Milliseconds()
+		sl.transcript = fullTranscript
+		if fullTranscript != "" {
+			sl.status = "OK"
+		} else if len(audioData) > 0 {
+			sl.status = "FAILED"
+		} else {
+			sl.status = "FAILED"
+		}
+		sl.addEvent("GATEWAY", fmt.Sprintf("commit complete: backend=%s, transcript=%d chars", backend, len(fullTranscript)))
+		go sl.writeToFile()
+	}
+
 	// Clear audio buffer and recording log
 	s.audioMu.Lock()
 	s.audioBuffer = nil
 	s.audioMu.Unlock()
 	s.currentRec = nil
+	s.currentSessLog = nil
 
 	// Archive audio and transcript in background
 	go archiveRecording(audioData, fullTranscript, backend)
@@ -685,13 +925,35 @@ func buildWAV(pcmData []byte, sampleRate int) []byte {
 }
 
 func (s *realtimeSession) handleAudioClear() {
-	log.Printf("[Realtime] input_audio_buffer.clear received")
+	s.audioMu.Lock()
+	bufLen := len(s.audioBuffer)
+	s.audioMu.Unlock()
 
-	// Reset audio archive buffer and recording log
+	log.Printf("[Realtime] input_audio_buffer.clear received (buffer=%d bytes)", bufLen)
+
+	// Commit-before-clear: if the buffer has audio data, auto-commit it first
+	// to ensure no recording is ever silently discarded.
+	if bufLen > 0 {
+		log.Printf("[Realtime] WARNING: clear received with %d bytes in buffer (%.1fs) — auto-committing before clear",
+			bufLen, float64(bufLen)/48000.0)
+		if sl := s.currentSessLog; sl != nil {
+			sl.addEvent("GATEWAY", fmt.Sprintf("clear received with %d bytes — auto-committing to prevent data loss", bufLen))
+		}
+		s.handleAudioCommit() // Save what we have (archives WAV + writes session log)
+	} else if sl := s.currentSessLog; sl != nil {
+		// Empty buffer clear — write session log as ABORTED if we have one
+		sl.endTime = time.Now()
+		sl.status = "ABORTED"
+		sl.addEvent("GATEWAY", "clear received with empty buffer")
+		go sl.writeToFile()
+	}
+
+	// Now clear (handleAudioCommit already clears buffer if it ran, but be safe)
 	s.audioMu.Lock()
 	s.audioBuffer = nil
 	s.audioMu.Unlock()
 	s.currentRec = nil
+	s.currentSessLog = nil
 
 	// Close existing Deepgram connection (will reconnect lazily on first append)
 	s.closeDeepgram()
@@ -701,7 +963,27 @@ func (s *realtimeSession) handleAudioClear() {
 	s.finalsMu.Unlock()
 }
 
+// handleSessionEvent processes Python→Gateway telemetry events for session logging.
+func (s *realtimeSession) handleSessionEvent(event realtimeEvent) {
+	if sl := s.currentSessLog; sl != nil {
+		layer := event.Layer
+		if layer == "" {
+			layer = "PYTHON"
+		}
+		sl.addEvent(layer, event.Event)
+	}
+}
+
 func (s *realtimeSession) cleanup() {
+	// If session ended with an active recording, write the session log
+	if sl := s.currentSessLog; sl != nil {
+		sl.endTime = time.Now()
+		if sl.status == "" {
+			sl.status = "ABORTED"
+		}
+		sl.addEvent("GATEWAY", "WebSocket closed — session ended")
+		sl.writeToFile()
+	}
 	s.closeDeepgram()
 }
 

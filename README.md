@@ -192,3 +192,56 @@ For debugging sessions spanning multiple machines:
 - Use `status.md` in project root to track progress
 - Commit frequently with `[voice-typing]` prefix
 - Document timeline of what was tried and what worked
+
+## Debugging & Profiling
+
+### OSD Profiler Tool
+
+If you're experiencing issues with the hyprwhspr OSD (On-Screen Display) - such as OSD appearing/disappearing unexpectedly, recordings stopping abruptly, or "falling back to old system" - use the OSD profiler tool.
+
+**Location**: `tools/osd_profiler.py`
+
+**Quick Start**:
+```bash
+cd tools
+python osd_profiler.py
+```
+
+The profiler provides a **real-time dashboard** showing:
+- OSD daemon status (PID, crashes, restarts)
+- Recording state changes
+- hyprwhspr journal events
+- Gateway transcription activity
+- Alerts for anomalies
+
+**Documentation**: See `tools/README.md` for details
+
+### Test Sessions
+
+For systematic debugging, use the test session tracking structure:
+
+**Create a new test session**:
+```bash
+cd test-sessions
+./new-session.sh "description-of-issue"
+```
+
+This creates a timestamped directory with:
+- Pre-filled template for documenting observations
+- Space for profiler output capture
+- Screenshots and recordings folders
+
+**Run profiler with capture**:
+```bash
+cd tools
+python osd_profiler.py | tee ../test-sessions/YYYYMMDD-HHMM-description/profiler-output.txt
+```
+
+**Documentation**:
+- `test-sessions/QUICK-START.md` - Step-by-step guide
+- `test-sessions/README.md` - Detailed documentation
+- `test-sessions/INDEX.md` - All test sessions and findings
+
+### Related Docs
+- `~/Programs/misc_work/osd_profiler_plan.md` - Root cause analysis and profiler design
+- `~/Programs/misc_work/hyprwhspr_osd_issues.txt` - Original bug report

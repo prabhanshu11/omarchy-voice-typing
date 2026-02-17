@@ -1,0 +1,13 @@
+# Profiler output logs (can be large)
+profiler-output.txt
+*.txt
+
+# Screenshots and recordings (can be large)
+screenshots/
+recordings/
+
+# Keep the directory structure but ignore large files
+# Keep notes.md and other documentation
+!README.md
+!notes.md
+!INDEX.md
