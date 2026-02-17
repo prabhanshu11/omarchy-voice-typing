@@ -1,5 +1,5 @@
 use std::fmt::Write as FmtWrite;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Timestamped event in a recording session timeline.

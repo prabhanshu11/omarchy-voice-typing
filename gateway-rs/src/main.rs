@@ -35,9 +35,23 @@ async fn main() {
     let port = config.port;
     let shared_state: Arc<AppState> = AppState::from_config(&config);
 
-    // Build router (Phase 1: health only; later phases add /v1/*, /api/*, etc.)
+    // Build router with all routes
     let app = Router::new()
+        // Core endpoints
         .route("/health", axum::routing::get(handlers::health::health))
+        .route("/v1/realtime", axum::routing::get(handlers::realtime::realtime))
+        .route("/v1/transcribe", axum::routing::post(handlers::transcribe::transcribe))
+        // Web UI API endpoints
+        .route("/api/recordings", axum::routing::get(handlers::web::list_recordings))
+        .route("/api/transcripts", axum::routing::get(handlers::web::list_transcripts))
+        .route(
+            "/api/transcript/:filename",
+            axum::routing::get(handlers::web::get_transcript)
+                .put(handlers::web::update_transcript),
+        )
+        .route("/api/audio/:filename", axum::routing::get(handlers::web::serve_audio))
+        .route("/api/stats", axum::routing::get(handlers::web::stats))
+        .route("/api/linked", axum::routing::get(handlers::web::list_linked))
         .with_state(shared_state);
 
     // Bind and serve

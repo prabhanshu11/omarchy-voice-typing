@@ -1,1 +1,2 @@
-// Phase 3: Whisper client + fallback chain
+pub mod fallback;
+pub mod whisper;
