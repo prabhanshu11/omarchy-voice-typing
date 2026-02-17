@@ -202,13 +202,18 @@ func (sl *sessionLog) addEvent(layer, event string) {
 // Resolved once at startup relative to the gateway working directory.
 var sessionLogDir string
 
+// lastSessionPath is the path to the compact JSON summary for the waybar tray.
+var lastSessionPath string
+
 func init() {
 	// Default: ../logs/sessions/ (relative to gateway binary, which is in gateway/)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		sessionLogDir = "../logs/sessions"
+		lastSessionPath = "../last_session.json"
 	} else {
 		sessionLogDir = filepath.Join(home, "Programs", "omarchy-voice-typing", "logs", "sessions")
+		lastSessionPath = filepath.Join(home, ".config", "hyprwhspr", "last_session.json")
 	}
 }
 
@@ -329,6 +334,58 @@ func (sl *sessionLog) writeToFile() {
 	}
 }
 
+// writeLastSession writes a compact JSON summary to ~/.config/hyprwhspr/last_session.json
+// for the waybar tray tooltip. Uses atomic write (tmp + rename) to avoid partial reads.
+func (sl *sessionLog) writeLastSession(backend string) {
+	if sl == nil || sl.id == "" {
+		return
+	}
+
+	preview := sl.transcript
+	if len(preview) > 60 {
+		preview = preview[:60] + "..."
+	}
+
+	var duration float64
+	if !sl.endTime.IsZero() {
+		duration = sl.endTime.Sub(sl.startTime).Seconds()
+	}
+
+	data := map[string]any{
+		"id":               sl.id,
+		"timestamp_unix":   sl.startTime.Unix(),
+		"timestamp_iso":    sl.startTime.Format(time.RFC3339),
+		"duration_s":       duration,
+		"status":           sl.status,
+		"backend":          backend,
+		"transcript_preview": preview,
+		"transcript_chars": len(sl.transcript),
+		"dg_connect_ms":   sl.dgConnectMs,
+		"first_audio_ms":  sl.firstAudioMs,
+		"transcribe_ms":   sl.transcribeMs,
+		"total_ms":        sl.totalMs,
+		"py_chunks":       sl.pyChunks,
+		"gw_bytes":        sl.gwBytes,
+	}
+
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("[SessionLog] Failed to marshal last_session JSON: %v", err)
+		return
+	}
+
+	tmpPath := lastSessionPath + ".tmp"
+	if err := os.WriteFile(tmpPath, jsonBytes, 0644); err != nil {
+		log.Printf("[SessionLog] Failed to write %s: %v", tmpPath, err)
+		return
+	}
+	if err := os.Rename(tmpPath, lastSessionPath); err != nil {
+		log.Printf("[SessionLog] Failed to rename %s → %s: %v", tmpPath, lastSessionPath, err)
+		return
+	}
+	log.Printf("[SessionLog] Written last_session.json (%s, %s)", sl.id, sl.status)
+}
+
 // realtimeSession manages state for a single WebSocket session.
 type realtimeSession struct {
 	clientConn      *websocket.Conn
@@ -437,6 +494,10 @@ func (s *realtimeSession) connectDeepgram() error {
 		if err != nil {
 			log.Printf("[Deepgram] ReadLoop ended: %v", err)
 		}
+		// Mark connection as dead so handleAudioAppend triggers a fresh reconnect.
+		// Without this, a stale deepgramClient causes "websocket: close sent" errors
+		// on every audio chunk until the next explicit closeDeepgram() call.
+		s.deepgramClient = nil
 	}()
 
 	return nil
@@ -520,24 +581,13 @@ func (s *realtimeSession) closeDeepgram() {
 }
 
 func (s *realtimeSession) handleSessionUpdate() {
-	offline := s.isOffline()
-	dgNil := s.deepgramClient == nil
-	log.Printf("[Realtime] session.update received (offline=%v, deepgramClient==nil=%v)", offline, dgNil)
+	log.Printf("[Realtime] session.update received (offline=%v)", s.isOffline())
 	s.sessionReady = true
 
-	// Try to connect to Deepgram for the initial session
-	if dgNil && !offline {
-		if err := s.connectDeepgram(); err != nil {
-			log.Printf("[Realtime] Failed to connect to Deepgram: %v", err)
-			// Don't send error to client — we'll fall back to local whisper
-			if s.localWhisperURL != "" {
-				log.Printf("[Realtime] Will use local whisper fallback at %s", s.localWhisperURL)
-			} else {
-				s.sendError("deepgram_connection_failed", err.Error())
-				return
-			}
-		}
-	}
+	// Do NOT eagerly connect to Deepgram here. The connection would sit idle until
+	// the user starts recording, and Deepgram closes idle connections after ~12s
+	// ("did not receive audio data within the timeout window"). Instead, connect
+	// lazily on first audio chunk in handleAudioAppend.
 
 	// Determine backend for session.updated response
 	backend := "nova-2"
@@ -624,11 +674,13 @@ func (s *realtimeSession) handleAudioAppend(event realtimeEvent) {
 		return
 	}
 
-	// Lazily reconnect to Deepgram if needed (after a previous commit closed it)
+	// Lazily connect to Deepgram on first audio chunk (or after previous connection died).
+	// This blocks the WS read loop for ~900ms but is simple and reliable — audio chunks
+	// queue in gorilla/websocket's read buffer and get processed immediately after.
 	if s.deepgramClient == nil {
-		log.Printf("[Realtime] Reconnecting to Deepgram for new utterance")
+		log.Printf("[Realtime] Connecting to Deepgram for new utterance")
 		if err := s.connectDeepgram(); err != nil {
-			log.Printf("[Realtime] Failed to reconnect to Deepgram: %v (will use offline fallback)", err)
+			log.Printf("[Realtime] Failed to connect to Deepgram: %v (will use offline fallback at commit)", err)
 			return
 		}
 	}
@@ -732,7 +784,8 @@ func (s *realtimeSession) handleAudioCommit() {
 			sl.status = "FAILED"
 		}
 		sl.addEvent("GATEWAY", fmt.Sprintf("commit complete: backend=%s, transcript=%d chars", backend, len(fullTranscript)))
-		go sl.writeToFile()
+		sl.writeLastSession(backend) // compact JSON for tray tooltip (sync, fast)
+		go sl.writeToFile()          // full human-readable log (async)
 	}
 
 	// Clear audio buffer and recording log
@@ -931,24 +984,50 @@ func (s *realtimeSession) handleAudioClear() {
 
 	log.Printf("[Realtime] input_audio_buffer.clear received (buffer=%d bytes)", bufLen)
 
-	// Commit-before-clear: if the buffer has audio data, auto-commit it first
-	// to ensure no recording is ever silently discarded.
-	if bufLen > 0 {
-		log.Printf("[Realtime] WARNING: clear received with %d bytes in buffer (%.1fs) — auto-committing before clear",
-			bufLen, float64(bufLen)/48000.0)
-		if sl := s.currentSessLog; sl != nil {
-			sl.addEvent("GATEWAY", fmt.Sprintf("clear received with %d bytes — auto-committing to prevent data loss", bufLen))
+	// Fix 8: Early-clear diagnostic — if clear arrives within 2s of recording start,
+	// it's almost certainly the double-start bug (Python calls clear_audio_buffer
+	// from get_realtime_streaming_callback on a second _start_recording invocation).
+	if sl := s.currentSessLog; sl != nil && !sl.startTime.IsZero() {
+		elapsed := time.Since(sl.startTime)
+		if elapsed < 2*time.Second {
+			log.Printf("[Realtime] WARNING: clear %.1fs after start — likely double-start bug", elapsed.Seconds())
+			sl.addEvent("GATEWAY", fmt.Sprintf("WARNING: early clear at T+%.1fs — likely double-start race condition", elapsed.Seconds()))
 		}
-		s.handleAudioCommit() // Save what we have (archives WAV + writes session log)
-	} else if sl := s.currentSessLog; sl != nil {
-		// Empty buffer clear — write session log as ABORTED if we have one
+	}
+
+	// Fix 3: Do NOT auto-commit on clear. The auto-commit was sending partial audio
+	// (~18 chunks / 1.2s) to Deepgram which returned 0 chars, creating ghost
+	// transcription events. Instead: discard + archive for debugging + log as ABORTED.
+	if bufLen > 0 {
+		audioDuration := float64(bufLen) / 48000.0
+		log.Printf("[Realtime] WARNING: discarding %d bytes (%.1fs) on clear — NOT auto-committing", bufLen, audioDuration)
+
+		// Archive audio for debugging but don't transcribe
+		s.audioMu.Lock()
+		audioData := make([]byte, len(s.audioBuffer))
+		copy(audioData, s.audioBuffer)
+		s.audioMu.Unlock()
+		go archiveRecording(audioData, "", "cleared")
+
+		if sl := s.currentSessLog; sl != nil {
+			sl.addEvent("GATEWAY", fmt.Sprintf("clear: discarded %d bytes / %.1fs (not auto-committed)", bufLen, audioDuration))
+		}
+	}
+
+	// Write session log as ABORTED
+	if sl := s.currentSessLog; sl != nil {
 		sl.endTime = time.Now()
 		sl.status = "ABORTED"
-		sl.addEvent("GATEWAY", "clear received with empty buffer")
+		if bufLen > 0 {
+			sl.addEvent("GATEWAY", fmt.Sprintf("clear: discarded %d bytes (not auto-committed)", bufLen))
+		} else {
+			sl.addEvent("GATEWAY", "clear received with empty buffer")
+		}
+		sl.writeLastSession("none")
 		go sl.writeToFile()
 	}
 
-	// Now clear (handleAudioCommit already clears buffer if it ran, but be safe)
+	// Clear all state
 	s.audioMu.Lock()
 	s.audioBuffer = nil
 	s.audioMu.Unlock()
