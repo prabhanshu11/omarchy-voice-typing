@@ -111,7 +111,7 @@ fn chrono_timestamp() -> String {
 }
 
 /// Break Unix timestamp into calendar parts (UTC).
-fn timestamp_parts(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+pub fn timestamp_parts(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let days = (secs / 86400) as u32;
     let time_of_day = (secs % 86400) as u32;
     let hour = time_of_day / 3600;
@@ -158,7 +158,7 @@ fn timestamp_parts(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     (y, m + 1, remaining + 1, hour, min, sec)
 }
 
-fn is_leap(y: u32) -> bool {
+pub fn is_leap(y: u32) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 

@@ -1,11 +1,14 @@
+mod assemblyai;
 mod audio;
 mod config;
 mod deepgram;
 mod error;
 mod handlers;
+mod logging;
 mod secrets;
 mod spelling;
 mod state;
+mod transcription;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
