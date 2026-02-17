@@ -3,6 +3,10 @@ name = "voice-gateway"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "voice_gateway"
+path = "src/lib.rs"
+
 [[bin]]
 name = "voice-gateway"
 path = "src/main.rs"
@@ -30,6 +34,7 @@ native-tls = "0.2"
 wiremock = "0.6"
 mockall = "0.13"
 tempfile = "3"
+tokio-tungstenite = "0.26"
 
 [profile.release]
 lto = true
