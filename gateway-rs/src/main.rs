@@ -1,4 +1,6 @@
+mod audio;
 mod config;
+mod deepgram;
 mod error;
 mod handlers;
 mod secrets;

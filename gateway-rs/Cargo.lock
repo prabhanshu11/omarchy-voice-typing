@@ -1953,6 +1953,7 @@ dependencies = [
  "futures-util",
  "hound",
  "mockall",
+ "native-tls",
  "reqwest",
  "serde",
  "serde_json",

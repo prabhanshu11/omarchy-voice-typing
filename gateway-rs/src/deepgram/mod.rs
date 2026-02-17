@@ -1,1 +1,1 @@
-// Phase 2: Deepgram streaming WebSocket client
+pub mod streaming;

@@ -24,6 +24,7 @@ anyhow = "1"
 base64 = "0.22"
 futures-util = "0.3"
 tokio-util = "0.7"
+native-tls = "0.2"
 
 [dev-dependencies]
 wiremock = "0.6"
