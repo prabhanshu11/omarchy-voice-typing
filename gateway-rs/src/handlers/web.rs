@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use axum::Json;
 use axum::body::Body;
-use axum::extract::Query;
+use axum::extract::Path as AxumPath;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
@@ -254,12 +254,12 @@ pub async fn list_transcripts() -> Result<Json<Vec<Transcript>>, GatewayError> {
     Ok(Json(transcripts))
 }
 
-/// GET /api/transcript?filename=X — return a single transcript with its text content.
+/// GET /api/transcript/:filename — return a single transcript with its text content.
 pub async fn get_transcript(
-    Query(params): Query<FilenameParam>,
+    AxumPath(raw_filename): AxumPath<String>,
 ) -> Result<Json<Transcript>, GatewayError> {
-    let filename = sanitize_filename(&params.filename)
-        .ok_or_else(|| GatewayError::BadRequest("filename parameter required".into()))?;
+    let filename = sanitize_filename(&raw_filename)
+        .ok_or_else(|| GatewayError::BadRequest("invalid filename".into()))?;
 
     let path = Path::new(TRANSCRIPTS_DIR).join(&filename);
 
@@ -283,13 +283,13 @@ pub async fn get_transcript(
     }))
 }
 
-/// PUT /api/transcript?filename=X — update a transcript's text on disk.
+/// PUT /api/transcript/:filename — update a transcript's text on disk.
 pub async fn update_transcript(
-    Query(params): Query<FilenameParam>,
+    AxumPath(raw_filename): AxumPath<String>,
     Json(body): Json<TranscriptUpdate>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    let filename = sanitize_filename(&params.filename)
-        .ok_or_else(|| GatewayError::BadRequest("filename parameter required".into()))?;
+    let filename = sanitize_filename(&raw_filename)
+        .ok_or_else(|| GatewayError::BadRequest("invalid filename".into()))?;
 
     let path = Path::new(TRANSCRIPTS_DIR).join(&filename);
 
@@ -306,14 +306,14 @@ pub async fn update_transcript(
     Ok(Json(serde_json::json!({ "status": "saved" })))
 }
 
-/// GET /api/audio?filename=X — serve an audio file with correct Content-Type and
+/// GET /api/audio/:filename — serve an audio file with correct Content-Type and
 /// HTTP range request support for seeking in the browser.
 pub async fn serve_audio(
-    Query(params): Query<FilenameParam>,
+    AxumPath(raw_filename): AxumPath<String>,
     headers: HeaderMap,
 ) -> Result<Response, GatewayError> {
-    let filename = sanitize_filename(&params.filename)
-        .ok_or_else(|| GatewayError::BadRequest("filename parameter required".into()))?;
+    let filename = sanitize_filename(&raw_filename)
+        .ok_or_else(|| GatewayError::BadRequest("invalid filename".into()))?;
 
     let path = Path::new(RECORDINGS_DIR).join(&filename);
 
