@@ -28,8 +28,9 @@ between pressing Super+` and the recording actually starting. The user has to wa
 and words get clipped at the beginning. If they wait too long, the system times out.
 
 **Root cause chain (each adds latency):**
-1. **BT profile switch: ~3s** — `hyprwhspr-toggle-v2` calls `switch_to_hfp` which does
-   `pactl set-card-profile` then `sleep 3` (PipeWire needs time to create the HFP source node)
+1. **BT profile switch: ~1.5s** — `hyprwhspr-toggle-v2` calls `switch_to_hfp` which does
+   `pactl set-card-profile` then `sleep 1.5` (recording starts BEFORE the switch for instant
+   OSD feedback — audio capture records silence until HFP source activates)
 2. **Verification timeout: 500ms** — System `_start_recording()` calls `verify_and_play_sound()`
    which waits up to 500ms for the first audio callback. With BT, PipeWire may need longer.
 3. **Stability check: 200ms** — `verify_stream_stable()` waits another 200ms to confirm
@@ -37,15 +38,67 @@ and words get clipped at the beginning. If they wait too long, the system times 
 4. **Deepgram connect: ~900ms** — Gateway connects to Deepgram synchronously on first audio chunk.
    Blocks the WebSocket read loop, queuing audio in gorilla/websocket's buffer.
 
-**Total worst case: ~4.6s** from keypress to first audio reaching Deepgram.
+**Total worst case: ~3.1s** from keypress to first audio reaching Deepgram.
 
-**Silent failure mode:** If `verify_and_play_sound()` fails (BT too slow), the system code at
-`/usr/lib/hyprwhspr/lib/main.py:557-576` sets `is_recording = False` and calls
-`_notify_zero_volume()` — but prints **nothing** to stdout. Journalctl shows "Recording started"
-then silence. The recording appears to start then auto-stop with no visible error.
+## SOLVED: Mute detection kills BT recordings (diagnosed Feb 18 2026)
 
-**Potential fixes (not yet implemented):**
-- Increase verify timeout from 500ms → 2000ms for BT sources (requires full `_start_recording` override in monkey-patch)
+**Problem:** Recordings with BT headphones would silently fail ~80% of the time. Python logged
+"Recording started" but no audio ever reached the gateway. No error messages. User had to press
+Super+` 3-7 times before a recording would succeed.
+
+**Root cause:** System mute detection at `/usr/lib/hyprwhspr/lib/main.py:937-982`.
+The audio level monitor samples every 100ms, and after 10 consecutive samples below
+threshold `5e-7` (1 second of silence), calls `_cancel_recording_muted()`. BT headphones
+in HFP mode produce digital silence for 1-3 seconds while the codec initializes. The mute
+detector fires before real audio flows, silently canceling the recording.
+
+**Why it was invisible:** `_cancel_recording_muted()` (line 654-675) sets `is_recording=False`,
+stops audio capture, and plays an error sound — but prints **zero log output** on the success
+path. Only `except Exception` at line 668 logs anything. So journalctl shows "Recording started"
+then nothing — the recording appears to vanish.
+
+**Diagnostic evidence (from live session):**
+```
+# Python: 6 starts, 0 stops — each "started" then silently killed by mute detector
+03:59:13  [CONTROL] Recording start requested → Recording started
+03:59:17  [CONTROL] Recording start requested → Recording started   # is_recording was False again!
+03:59:22  [CONTROL] Recording start requested → Recording started
+03:59:28  [CONTROL] Recording start requested → Recording started
+03:59:33  [CONTROL] Recording start requested → Recording started
+03:59:54  [CONTROL] Recording start requested → Recording started   # this one finally worked
+
+# Gateway: connected to Deepgram each time, but got only 1 chunk then silence
+03:59:13  [rec-006] Recording started → Deepgram connected
+03:59:47  [Deepgram] ReadLoop ended: "did not receive audio data within timeout"
+```
+
+**Fix applied:** Set `"mute_detection": false` in `~/.config/hyprwhspr/config.json`.
+This disables the system's zero-volume cancellation entirely.
+
+**Better long-term fix (not yet implemented):**
+- Delay mute detection for the first 3-5s of recording when BT source is active
+- Or increase `samples_to_cancel` from 10 (1s) to 30-50 (3-5s) for BT sources
+- This preserves mute protection for actual muted-mic scenarios while tolerating BT startup
+
+**Config location:** `~/.config/hyprwhspr/config.json` → `"mute_detection": false`
+
+## OSD not showing during recording (observed Feb 18 2026)
+
+**Problem:** After restarting hyprwhspr, the MicOSD overlay does not appear during recording.
+The Python logs show `[MIC-OSD] Found orphaned daemon (PID XXXX), reusing it` on every
+recording start. The daemon process is running but the OSD window doesn't become visible.
+
+**Likely cause:** The MicOSD daemon (GTK4 + layer-shell) loses its Wayland connection
+or layer surface when the parent hyprwhspr process restarts. The "orphaned daemon" detection
+reuses the stale process instead of spawning a fresh one.
+
+**Investigation needed:**
+- Check if killing the orphaned daemon PID and letting a new one spawn fixes it
+- May need to add a `kill_orphaned_daemon()` step in `_patched_init` or `_patched_start_recording`
+- See `local-bootstrapping/docs/mic-osd-lessons.md` for GTK4 layer-shell quirks
+
+## Potential fixes for BT latency (not yet implemented)
+
 - Start BT profile switch earlier (pre-switch on first keypress, confirm on second)
 - Pre-warm Deepgram connection: connect on BT switch, not on first audio chunk
 - Show OSD immediately on keypress with a "connecting..." state, transition to waveform when audio flows
