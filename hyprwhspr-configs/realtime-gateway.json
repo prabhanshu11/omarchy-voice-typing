@@ -1,0 +1,10 @@
+{
+  "transcription_backend": "realtime-ws",
+  "websocket_provider": "custom",
+  "websocket_url": "ws://127.0.0.1:8765/v1/realtime",
+  "websocket_model": "nova-2",
+  "realtime_mode": "transcribe",
+  "realtime_timeout": 30,
+  "realtime_buffer_max_seconds": 5,
+  "rest_endpoint_url": "http://127.0.0.1:8765/v1/transcribe"
+}

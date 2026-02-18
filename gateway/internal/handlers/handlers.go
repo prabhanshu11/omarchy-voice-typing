@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,9 @@ type ErrorResponse struct {
 type Handler struct {
 	AAIClient      *assemblyai.Client
 	CustomSpelling []assemblyai.CustomSpelling
+	DeepgramAPIKey string
+	LocalWhisperURL string // e.g. "http://localhost:8767"
+	LANWhisperURL   string // Remote whisper on LAN (e.g., desktop via Tailscale)
 	clientMutex    sync.Mutex
 }
 
@@ -111,7 +115,7 @@ func (h *Handler) TranscribeHandler(w http.ResponseWriter, r *http.Request) {
 	var audioURL string
 
 	// Check if it's multipart/form-data
-	if contentType := r.Header.Get("Content-Type"); contentType != "" && (contentType[:19] == "multipart/form-data" || contentType[:33] == "application/x-www-form-urlencoded") {
+	if contentType := r.Header.Get("Content-Type"); contentType != "" && (strings.HasPrefix(contentType, "multipart/form-data") || strings.HasPrefix(contentType, "application/x-www-form-urlencoded")) {
 		err := r.ParseMultipartForm(32 << 20) // 32MB max in memory
 		if err != nil {
 			h.sendError(w, http.StatusBadRequest, "Failed to parse multipart form", err.Error())
@@ -239,4 +243,12 @@ func (h *Handler) sendError(w http.ResponseWriter, code int, message string, det
 		Error:   message,
 		Details: details,
 	})
+}
+
+// HealthHandler returns 200 OK if the gateway is running.
+// Used by hyprwhspr-toggle to check gateway availability before recording.
+func (h *Handler) HealthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }

@@ -1,9 +1,0 @@
-2026/01/01 17:06:27 Starting gateway server on :8000
-2026/01/01 17:06:38 Received POST request to /v1/transcribe
-2026/01/01 17:07:25 Processing transcription for audio URL: https://cdn.assemblyai.com/upload/dc324a55ef13229923dcdedcd782cc2c458e9487fe8920d7c8851e4f400c2245/5238dd9a-eb7d-49fd-b086-d80cf01a79d8
-2026/01/01 17:07:26 Transcript job created with ID: 33857de3-f6cc-4648-ac89-5ead1e9d8587
-2026/01/01 17:07:33 Transcription completed for ID: 33857de3-f6cc-4648-ac89-5ead1e9d8587. Duration: 264.00s
-2026/01/01 17:07:33 Received POST request to /v1/transcribe
-2026/01/01 17:07:40 Processing transcription for audio URL: https://cdn.assemblyai.com/upload/a41eabc9bed6455fba46c32fd0f3d531cc32f8aa6f37c027b3c105cbfc5c689b/b7b44b64-7285-4843-b7e7-71e78c77cd73
-2026/01/01 17:07:41 Transcript job created with ID: 49552fa4-91d1-4596-bce5-ccb8999262ec
-2026/01/01 17:07:45 Transcription completed for ID: 49552fa4-91d1-4596-bce5-ccb8999262ec. Duration: 264.00s

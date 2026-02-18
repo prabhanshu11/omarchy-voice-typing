@@ -1,0 +1,3 @@
+# OSD Profiler dependencies
+rich>=13.0.0
+watchdog>=3.0.0
