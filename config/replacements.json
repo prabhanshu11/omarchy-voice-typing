@@ -4,7 +4,11 @@
     "to": "Dvorak"
   },
   {
-      "from": ["Omarchy"],
-      "to": "Omarchy"
+    "from": ["Omarchy"],
+    "to": "Omarchy"
+  },
+  {
+    "from": ["RAS", "Ras"],
+    "to": "Rust"
   }
 ]
