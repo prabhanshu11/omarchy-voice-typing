@@ -12,7 +12,8 @@ wheels/
 # Secrets
 .env
 
-# Compiled Go binaries
+# Compiled binaries (always rebuilt by build.sh)
+bin/
 gateway/voice-gateway
 gateway/server
 
