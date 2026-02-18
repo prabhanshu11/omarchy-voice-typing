@@ -44,6 +44,7 @@ pub fn test_state(
         }],
         http_client: reqwest::Client::new(),
         latency_logger: std::sync::Arc::new(latency_logger),
+        shutdown: tokio_util::sync::CancellationToken::new(),
     })
 }
 

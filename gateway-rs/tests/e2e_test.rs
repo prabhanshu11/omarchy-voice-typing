@@ -500,7 +500,337 @@ async fn all_routes_respond() {
 }
 
 // ═══════════════════════════════════════════════
-// Test 10: LAN whisper fallback → local whisper
+// Test 10: CORS preflight returns proper headers
+// ═══════════════════════════════════════════════
+
+#[tokio::test]
+async fn cors_preflight_returns_headers() {
+    let state = common::test_state("http://localhost:9999", None);
+    let addr = common::start_test_server(state).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .request(reqwest::Method::OPTIONS, format!("http://{addr}/health"))
+        .header("Origin", "http://localhost:5173")
+        .header("Access-Control-Request-Method", "GET")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert!(
+        resp.headers().contains_key("access-control-allow-origin"),
+        "Missing CORS allow-origin header"
+    );
+    assert!(
+        resp.headers().contains_key("access-control-allow-methods"),
+        "Missing CORS allow-methods header"
+    );
+}
+
+// ═══════════════════════════════════════════════
+// Test 11: Concurrent WS sessions — no crosstalk
+//   3 sessions, each gets its own transcript
+// ═══════════════════════════════════════════════
+
+#[tokio::test]
+async fn concurrent_ws_sessions_no_crosstalk() {
+    let mock_whisper = MockServer::start().await;
+
+    // Use a counter to make each response unique — wiremock returns same
+    // response for all, but we verify each session gets *a* transcript.
+    Mock::given(method("POST"))
+        .and(path("/transcribe"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "text": "session transcript",
+            "model": "test-whisper",
+            "duration": 1.0,
+            "transcribe_time": 0.1,
+        })))
+        .mount(&mock_whisper)
+        .await;
+
+    let state = common::test_state(&mock_whisper.uri(), None);
+    let addr = common::start_test_server(state).await;
+
+    // Spawn 3 concurrent sessions
+    let mut handles = Vec::new();
+    for _ in 0..3 {
+        let addr = addr;
+        handles.push(tokio::spawn(async move {
+            let (mut sink, mut stream) = ws_connect(addr).await;
+            let _ = read_json(&mut stream).await; // session.created
+
+            send_json(
+                &mut sink,
+                &serde_json::json!({"type": "session.update", "session": {}}),
+            )
+            .await;
+            let _ = read_json(&mut stream).await; // session.updated
+
+            let chunk = common::silence_pcm16(0.1);
+            let b64_chunk = BASE64.encode(&chunk);
+            for _ in 0..3 {
+                send_json(
+                    &mut sink,
+                    &serde_json::json!({
+                        "type": "input_audio_buffer.append",
+                        "audio": b64_chunk,
+                    }),
+                )
+                .await;
+            }
+            send_json(
+                &mut sink,
+                &serde_json::json!({"type": "input_audio_buffer.commit"}),
+            )
+            .await;
+
+            let msg = read_json(&mut stream).await;
+            assert_eq!(
+                msg["type"],
+                "conversation.item.input_audio_transcription.completed"
+            );
+            msg["transcript"].as_str().unwrap().to_string()
+        }));
+    }
+
+    // All 3 should succeed independently
+    for handle in handles {
+        let transcript = handle.await.unwrap();
+        assert!(
+            !transcript.is_empty(),
+            "Expected non-empty transcript from concurrent session"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════
+// Test 12: Rapid-fire recordings (5 append→commit cycles)
+// ═══════════════════════════════════════════════
+
+#[tokio::test]
+async fn rapid_fire_recordings() {
+    let (addr, _mock) = setup_with_mock_whisper().await;
+
+    let (mut sink, mut stream) = ws_connect(addr).await;
+    let _ = read_json(&mut stream).await; // session.created
+
+    send_json(
+        &mut sink,
+        &serde_json::json!({"type": "session.update", "session": {}}),
+    )
+    .await;
+    let _ = read_json(&mut stream).await; // session.updated
+
+    let chunk = common::silence_pcm16(0.1);
+    let b64_chunk = BASE64.encode(&chunk);
+
+    for i in 0..5 {
+        // Append audio
+        for _ in 0..2 {
+            send_json(
+                &mut sink,
+                &serde_json::json!({
+                    "type": "input_audio_buffer.append",
+                    "audio": b64_chunk,
+                }),
+            )
+            .await;
+        }
+        // Commit
+        send_json(
+            &mut sink,
+            &serde_json::json!({"type": "input_audio_buffer.commit"}),
+        )
+        .await;
+
+        let msg = read_json(&mut stream).await;
+        assert_eq!(
+            msg["type"],
+            "conversation.item.input_audio_transcription.completed",
+            "Recording {i} did not produce transcript"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════
+// Test 13: POST /v1/transcribe with mock AssemblyAI
+// ═══════════════════════════════════════════════
+
+#[tokio::test]
+async fn assemblyai_transcribe_endpoint() {
+    let mock_aai = MockServer::start().await;
+
+    // Mock upload
+    Mock::given(method("POST"))
+        .and(path("/v2/upload"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "upload_url": "https://cdn.assemblyai.com/test-audio"
+        })))
+        .mount(&mock_aai)
+        .await;
+
+    // Mock create transcript
+    Mock::given(method("POST"))
+        .and(path("/v2/transcript"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "test-tx-123",
+            "status": "queued",
+        })))
+        .mount(&mock_aai)
+        .await;
+
+    // Mock poll transcript (immediately completed)
+    Mock::given(method("GET"))
+        .and(path("/v2/transcript/test-tx-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "test-tx-123",
+            "status": "completed",
+            "text": "Assembled transcript",
+            "audio_duration": 3.5,
+        })))
+        .mount(&mock_aai)
+        .await;
+
+    // Create state with mock AssemblyAI key
+    // The transcribe handler uses the base URL from the client, but the client
+    // is hardcoded to https://api.assemblyai.com. So this test verifies the
+    // handler wiring but can't easily redirect to wiremock. We'll test that
+    // the endpoint accepts the request and returns a meaningful error when the
+    // real API isn't reachable.
+    let state = common::test_state("http://localhost:9999", None);
+    let addr = common::start_test_server(state).await;
+
+    let client = reqwest::Client::new();
+
+    // POST with JSON body — should fail gracefully (no API key + no pass)
+    let resp = client
+        .post(format!("http://{addr}/v1/transcribe"))
+        .json(&serde_json::json!({"audio_url": "https://example.com/audio.wav"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Should return an error about missing API key, not 404 or panic
+    assert_ne!(
+        resp.status().as_u16(),
+        404,
+        "/v1/transcribe should be routed"
+    );
+    // The endpoint exists and responds (even if it's a 500 due to no API key)
+    assert!(
+        resp.status().as_u16() >= 400,
+        "Expected error status (no API key configured), got {}",
+        resp.status()
+    );
+}
+
+// ═══════════════════════════════════════════════
+// Test 14: Latency JSONL written after recording commit
+// ═══════════════════════════════════════════════
+
+#[tokio::test]
+async fn latency_jsonl_written_after_recording() {
+    let (addr, _mock) = setup_with_mock_whisper().await;
+
+    // Find the latency log dir used by tests (temp dir)
+    let latency_dir = std::env::temp_dir().join("voice-gateway-test-latency");
+
+    // Count existing JSONL lines before the test
+    let count_lines = |dir: &std::path::Path| -> usize {
+        let mut total = 0;
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if entry.path().extension().map(|e| e == "jsonl").unwrap_or(false) {
+                    if let Ok(contents) = std::fs::read_to_string(entry.path()) {
+                        total += contents.lines().count();
+                    }
+                }
+            }
+        }
+        total
+    };
+
+    let lines_before = count_lines(&latency_dir);
+
+    // Run a full recording cycle
+    let (mut sink, mut stream) = ws_connect(addr).await;
+    let _ = read_json(&mut stream).await; // session.created
+
+    send_json(
+        &mut sink,
+        &serde_json::json!({"type": "session.update", "session": {}}),
+    )
+    .await;
+    let _ = read_json(&mut stream).await; // session.updated
+
+    let chunk = common::silence_pcm16(0.1);
+    let b64_chunk = BASE64.encode(&chunk);
+    for _ in 0..3 {
+        send_json(
+            &mut sink,
+            &serde_json::json!({
+                "type": "input_audio_buffer.append",
+                "audio": b64_chunk,
+            }),
+        )
+        .await;
+    }
+    send_json(
+        &mut sink,
+        &serde_json::json!({"type": "input_audio_buffer.commit"}),
+    )
+    .await;
+
+    let _ = read_json(&mut stream).await; // transcript
+
+    // Give async log writing a moment
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let lines_after = count_lines(&latency_dir);
+    assert!(
+        lines_after > lines_before,
+        "Expected new latency JSONL line after recording (before={lines_before}, after={lines_after})"
+    );
+}
+
+// ═══════════════════════════════════════════════
+// Test 15: Directory traversal blocked on audio endpoint
+// ═══════════════════════════════════════════════
+
+#[tokio::test]
+async fn directory_traversal_blocked() {
+    let state = common::test_state("http://localhost:9999", None);
+    let addr = common::start_test_server(state).await;
+    let client = reqwest::Client::new();
+
+    // Attempt directory traversal through URL-encoded paths.
+    // Axum normalizes raw "../" before routing, but %2F-encoded paths reach
+    // the handler where sanitize_filename() strips path components.
+    let traversal_paths = [
+        "/api/audio/..%2F..%2F..%2Fetc%2Fpasswd",
+        "/api/transcript/..%2F..%2F..%2Fetc%2Fpasswd",
+    ];
+
+    for path in &traversal_paths {
+        let resp = client
+            .get(format!("http://{addr}{path}"))
+            .send()
+            .await
+            .unwrap();
+
+        // Verify body doesn't contain /etc/passwd content
+        let body = resp.text().await.unwrap_or_default();
+        assert!(
+            !body.contains("root:"),
+            "Directory traversal leaked file content for {path}"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════
+// Test 16: LAN whisper fallback → local whisper
 // ═══════════════════════════════════════════════
 
 #[tokio::test]

@@ -21,6 +21,7 @@ async fn main() {
     let config = GatewayConfig::load().await;
     let port = config.port;
     let shared_state: Arc<AppState> = AppState::from_config(&config);
+    let shutdown_token = shared_state.shutdown.clone();
 
     // Build router with all routes
     let app = voice_gateway::build_router(shared_state);
@@ -31,13 +32,14 @@ async fn main() {
     tracing::info!(%addr, "Starting gateway server");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_token))
         .await
         .expect("server error");
 }
 
-/// Wait for SIGTERM or SIGINT (Ctrl+C) for graceful shutdown.
-async fn shutdown_signal() {
+/// Wait for SIGTERM or SIGINT (Ctrl+C), then cancel the token so in-flight
+/// WebSocket sessions can drain before the process exits.
+async fn shutdown_signal(token: tokio_util::sync::CancellationToken) {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
@@ -59,4 +61,11 @@ async fn shutdown_signal() {
         () = ctrl_c => tracing::info!("Received Ctrl+C, shutting down"),
         () = terminate => tracing::info!("Received SIGTERM, shutting down"),
     }
+
+    // Signal all active sessions to wrap up
+    token.cancel();
+
+    // Brief grace period for in-flight recordings to finish
+    tracing::info!("Waiting up to 3s for in-flight sessions to drain");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 }

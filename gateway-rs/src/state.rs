@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::config::GatewayConfig;
 use crate::logging::latency::LatencyLogger;
 use crate::spelling::CustomSpelling;
@@ -17,6 +19,7 @@ pub struct AppState {
     pub custom_spelling: Vec<CustomSpelling>,
     pub http_client: reqwest::Client,
     pub latency_logger: Arc<LatencyLogger>,
+    pub shutdown: CancellationToken,
 }
 
 impl std::fmt::Debug for AppState {
@@ -28,6 +31,7 @@ impl std::fmt::Debug for AppState {
             .field("lan_whisper_url", &self.lan_whisper_url)
             .field("custom_spelling", &self.custom_spelling)
             .field("latency_logger", &"LatencyLogger { .. }")
+            .field("shutdown", &self.shutdown.is_cancelled())
             .finish()
     }
 }
@@ -54,6 +58,7 @@ impl AppState {
                 .build()
                 .expect("failed to build HTTP client"),
             latency_logger: Arc::new(latency_logger),
+            shutdown: CancellationToken::new(),
         })
     }
 }

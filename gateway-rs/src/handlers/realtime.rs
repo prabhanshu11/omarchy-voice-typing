@@ -40,7 +40,7 @@ pub async fn realtime(
 ///
 /// Sends `session.created`, then reads messages from the client and dispatches
 /// them to the appropriate `RealtimeSession` method. Runs until the client
-/// disconnects or an error occurs.
+/// disconnects, an error occurs, or the server is shutting down.
 async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
     let (ws_sink, mut ws_stream) = socket.split();
     let session_id = format!("sess_{}", std::time::SystemTime::now()
@@ -48,6 +48,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
         .unwrap_or_default()
         .as_nanos());
 
+    let shutdown = state.shutdown.clone();
     let mut session = RealtimeSession::new(ws_sink, &state, session_id.clone());
 
     // Send session.created
@@ -64,15 +65,24 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
         return;
     }
 
-    // Read messages from hyprwhspr
+    // Read messages from hyprwhspr, exiting on shutdown signal
     use futures_util::StreamExt;
-    while let Some(msg_result) = ws_stream.next().await {
+    loop {
+        let msg_result = tokio::select! {
+            msg = ws_stream.next() => msg,
+            () = shutdown.cancelled() => {
+                tracing::info!(session_id = %session_id, "Shutdown signal received, closing session");
+                break;
+            }
+        };
+
         let msg = match msg_result {
-            Ok(msg) => msg,
-            Err(e) => {
+            Some(Ok(msg)) => msg,
+            Some(Err(e)) => {
                 tracing::info!(error = %e, "WebSocket read error");
                 break;
             }
+            None => break, // stream ended
         };
 
         let text = match msg {
@@ -104,6 +114,6 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
         }
     }
 
-    // Client disconnected — run cleanup
+    // Client disconnected or shutdown — run cleanup
     session.cleanup().await;
 }
