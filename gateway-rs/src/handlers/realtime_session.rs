@@ -563,7 +563,9 @@ impl RealtimeSession {
             sl.status = if !full_transcript.is_empty() {
                 "OK".to_string()
             } else {
-                "FAILED".to_string()
+                // Empty transcript from a successful pipeline = no speech detected,
+                // not an error. "FAILED" should only be used for actual pipeline errors.
+                "OK_EMPTY".to_string()
             };
             sl.add_event(
                 "GATEWAY",

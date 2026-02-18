@@ -1,5 +1,5 @@
 [Unit]
-Description=Voice Gateway - AssemblyAI REST API Gateway
+Description=Voice Gateway (Rust)
 Documentation=https://github.com/prabhanshu11/omarchy-voice-typing
 After=network.target
 
@@ -7,15 +7,12 @@ After=network.target
 Type=simple
 # Kill any orphan process using port 8765 before starting
 ExecStartPre=-/usr/bin/fuser -k 8765/tcp
-ExecStart=%h/Programs/omarchy-voice-typing/gateway/voice-gateway
+ExecStart=%h/Programs/omarchy-voice-typing/gateway-rs/target/release/voice-gateway
 # Clean up on stop
 ExecStopPost=-/usr/bin/fuser -k 8765/tcp
 Restart=on-failure
 RestartSec=5
-WorkingDirectory=%h/Programs/omarchy-voice-typing/gateway
-
-# Load API key from .env file
-EnvironmentFile=%h/Programs/omarchy-voice-typing/.env
+WorkingDirectory=%h/Programs/omarchy-voice-typing/gateway-rs
 
 # Logging
 StandardOutput=journal
