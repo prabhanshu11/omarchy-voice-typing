@@ -82,20 +82,60 @@ This disables the system's zero-volume cancellation entirely.
 
 **Config location:** `~/.config/hyprwhspr/config.json` → `"mute_detection": false`
 
-## OSD not showing during recording (observed Feb 18 2026)
+## Deepgram TLS hostname mismatch on NAT64 networks (diagnosed Feb 18 2026)
+
+**Problem:** Deepgram connection fails with `certificate verify failed: (hostname mismatch)`
+when the network resolves `api.deepgram.com` to a NAT64 IPv6 address (`64:ff9b::...`).
+Gateway falls back to local whisper (`distil-large-v3`), which is less accurate.
+
+**Root cause:** The Rust gateway builds the WebSocket URL with the resolved IP address,
+and `native-tls` derives SNI from the URL. So TLS sends the IP as the hostname instead of
+`api.deepgram.com`. The Go gateway explicitly set `TLSClientConfig{ServerName: "api.deepgram.com"}`
+(commit `8432b68`), but this was missed in the Rust port.
+
+**Evidence:**
+```
+DNS resolved api.deepgram.com (cached) addr=[64:ff9b::2668:87d4]:443
+TLS error: certificate verify failed: (hostname mismatch)
+```
+
+**Fix (two-pronged):**
+1. Prefer IPv4 in `resolve_deepgram()` — loop through DNS results, pick first IPv4
+2. Explicitly set SNI hostname to `api.deepgram.com` in the TLS connector (not derived from URL)
+
+**Files:** `gateway-rs/src/deepgram/streaming.rs` lines 118-148
+
+## OSD not showing during recording (diagnosed Feb 18 2026)
 
 **Problem:** After restarting hyprwhspr, the MicOSD overlay does not appear during recording.
 The Python logs show `[MIC-OSD] Found orphaned daemon (PID XXXX), reusing it` on every
 recording start. The daemon process is running but the OSD window doesn't become visible.
 
-**Likely cause:** The MicOSD daemon (GTK4 + layer-shell) loses its Wayland connection
-or layer surface when the parent hyprwhspr process restarts. The "orphaned daemon" detection
-reuses the stale process instead of spawning a fresh one.
+**Root causes (confirmed via code analysis):**
 
-**Investigation needed:**
-- Check if killing the orphaned daemon PID and letting a new one spawn fixes it
-- May need to add a `kill_orphaned_daemon()` step in `_patched_init` or `_patched_start_recording`
-- See `local-bootstrapping/docs/mic-osd-lessons.md` for GTK4 layer-shell quirks
+1. **LD_PRELOAD stripped (critical):** The patched `runner.py` removes `LD_PRELOAD` to avoid
+   a segfault with nvidia env vars + GTK4 layer-shell. But without `LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so`,
+   the OSD spawns as a regular (invisible) window instead of a Wayland overlay.
+   See `local-bootstrapping/docs/mic-osd-lessons.md` env table.
+
+2. **Orphaned daemon reuse:** After hyprwhspr restart, the old daemon's Wayland surface is stale.
+   The `_ensure_daemon()` code (runner.py:66-82) finds the PID alive and reuses it, but the
+   layer surface is disconnected from the new Wayland session. Sending SIGUSR1 schedules
+   `_show()` on the daemon's MainLoop, but the window stays hidden.
+
+3. **Silent audio verification failure:** `_show()` in `main.py:118-139` verifies audio for
+   250ms. If the reused daemon's audio monitor is stale, `get_level()` returns zeros, and
+   the window is silently hidden with only a print statement.
+
+**Fix:**
+1. Kill orphaned daemon on restart instead of reusing it (fresh spawn every time)
+2. Use minimal environment dict (not full `os.environ`) WITH `LD_PRELOAD` set
+   (avoids nvidia segfault while keeping layer-shell working)
+
+**Files:**
+- `~/.local/lib/hyprwhspr-patch/mic_osd/runner.py` — daemon spawning
+- `/usr/lib/hyprwhspr/lib/mic_osd/main.py` — OSD app, signal handlers
+- `local-bootstrapping/docs/mic-osd-lessons.md` — env table, known quirks
 
 ## Potential fixes for BT latency (not yet implemented)
 
