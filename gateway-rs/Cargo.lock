@@ -1960,6 +1960,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-native-tls",
  "tokio-tungstenite 0.26.2",
  "tokio-util",
  "tower",

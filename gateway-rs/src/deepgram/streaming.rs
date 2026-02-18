@@ -6,7 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::WebSocketStream;
 
 use crate::error::GatewayError;
 
@@ -17,7 +17,7 @@ const DEEPGRAM_HOST: &str = "api.deepgram.com";
 static DNS_CACHE: tokio::sync::Mutex<Option<SocketAddr>> = tokio::sync::Mutex::const_new(None);
 
 /// Resolve api.deepgram.com with DNS caching.
-/// First call does a real lookup; subsequent calls return cached result.
+/// Prefers IPv4 addresses to avoid NAT64 TLS hostname mismatch issues.
 /// Cache is invalidated on connection failure via `invalidate_dns_cache()`.
 async fn resolve_deepgram() -> Result<SocketAddr, GatewayError> {
     {
@@ -27,18 +27,29 @@ async fn resolve_deepgram() -> Result<SocketAddr, GatewayError> {
         }
     }
 
-    let addrs = tokio::time::timeout(
+    let addrs: Vec<SocketAddr> = tokio::time::timeout(
         Duration::from_secs(3),
         tokio::net::lookup_host(format!("{DEEPGRAM_HOST}:443")),
     )
     .await
     .map_err(|_| GatewayError::Deepgram(format!("DNS timeout for {DEEPGRAM_HOST}")))?
-    .map_err(|e| GatewayError::Deepgram(format!("DNS lookup failed for {DEEPGRAM_HOST}: {e}")))?;
+    .map_err(|e| GatewayError::Deepgram(format!("DNS lookup failed for {DEEPGRAM_HOST}: {e}")))?
+    .collect();
 
+    if addrs.is_empty() {
+        return Err(GatewayError::Deepgram(format!(
+            "No addresses for {DEEPGRAM_HOST}"
+        )));
+    }
+
+    // Prefer IPv4 to avoid NAT64 (64:ff9b::/96) TLS hostname mismatch.
+    // NAT64 translates IPv6→IPv4 at the network layer, but TLS SNI sees the
+    // IPv6 address and the certificate is for api.deepgram.com → mismatch.
     let addr = addrs
-        .into_iter()
-        .next()
-        .ok_or_else(|| GatewayError::Deepgram(format!("No addresses for {DEEPGRAM_HOST}")))?;
+        .iter()
+        .find(|a| a.is_ipv4())
+        .copied()
+        .unwrap_or(addrs[0]);
 
     {
         let mut cache = DNS_CACHE.lock().await;
@@ -79,7 +90,7 @@ pub struct Alternative {
 type WsSink = Arc<
     Mutex<
         futures_util::stream::SplitSink<
-            WebSocketStream<MaybeTlsStream<TcpStream>>,
+            WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>,
             Message,
         >,
     >,
@@ -87,7 +98,7 @@ type WsSink = Arc<
 
 /// Read half of the Deepgram WebSocket.
 type WsStream =
-    futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
+    futures_util::stream::SplitStream<WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>>;
 
 /// A streaming connection to Deepgram's Nova-2 API.
 ///
@@ -101,7 +112,8 @@ pub struct StreamingClient {
 impl StreamingClient {
     /// Connect to Deepgram's streaming API.
     ///
-    /// Uses cached DNS and custom TLS with the correct SNI hostname.
+    /// Uses cached DNS, explicit TLS SNI (always `api.deepgram.com`), and
+    /// prefers IPv4 to avoid NAT64 hostname mismatch.
     /// Returns the client (write half) and the read stream (must be consumed by `read_loop`).
     pub async fn connect(
         api_key: &str,
@@ -115,9 +127,11 @@ impl StreamingClient {
             "model=nova-2&encoding=linear16&sample_rate={sample_rate}&channels=1\
              &interim_results=true&punctuate=true&smart_format=true&endpointing=300"
         );
-        let url = format!("wss://{addr}/v1/listen?{params}");
 
-        // Build the WebSocket request with auth header and correct Host
+        // Use the real hostname in the URI so tungstenite sends correct Host
+        // header and SNI. We connect TCP to the resolved IP manually below.
+        let url = format!("wss://{DEEPGRAM_HOST}/v1/listen?{params}");
+
         let request = tokio_tungstenite::tungstenite::http::Request::builder()
             .uri(&url)
             .header("Authorization", format!("Token {api_key}"))
@@ -132,27 +146,46 @@ impl StreamingClient {
             .body(())
             .map_err(|e| GatewayError::Deepgram(format!("failed to build request: {e}")))?;
 
-        // Connect with TLS (SNI = api.deepgram.com)
-        let connector =
-            tokio_tungstenite::Connector::NativeTls(native_tls::TlsConnector::new().map_err(
-                |e| GatewayError::Deepgram(format!("TLS connector failed: {e}")),
-            )?);
+        // Establish TCP to the resolved IP, then wrap with TLS using the real
+        // hostname for SNI. This is the Rust equivalent of Go's
+        //   TLSClientConfig{ServerName: "api.deepgram.com"}
+        // and avoids the NAT64 hostname mismatch where native-tls would try to
+        // verify the certificate against an IPv6 address instead of the domain.
+        let tls_connector = native_tls::TlsConnector::new()
+            .map_err(|e| GatewayError::Deepgram(format!("TLS connector failed: {e}")))?;
+        let tls_connector = tokio_native_tls::TlsConnector::from(tls_connector);
+
+        let tcp_stream = tokio::time::timeout(
+            Duration::from_secs(3),
+            TcpStream::connect(addr),
+        )
+        .await
+        .map_err(|_| GatewayError::Deepgram(format!("TCP connect timeout to {addr}")))?
+        .map_err(|e| {
+            tokio::spawn(async { invalidate_dns_cache().await });
+            GatewayError::Deepgram(format!("TCP connect failed to {addr}: {e}"))
+        })?;
+
+        let tls_stream = tokio::time::timeout(
+            Duration::from_secs(3),
+            tls_connector.connect(DEEPGRAM_HOST, tcp_stream),
+        )
+        .await
+        .map_err(|_| GatewayError::Deepgram("TLS handshake timeout".into()))?
+        .map_err(|e| {
+            tokio::spawn(async { invalidate_dns_cache().await });
+            GatewayError::Deepgram(format!("TLS handshake failed: {e}"))
+        })?;
 
         let (ws_stream, _response) = tokio::time::timeout(
             Duration::from_secs(3),
-            tokio_tungstenite::connect_async_tls_with_config(
-                request,
-                None,
-                false,
-                Some(connector),
-            ),
+            tokio_tungstenite::client_async(request, tls_stream),
         )
         .await
-        .map_err(|_| GatewayError::Deepgram("connection timeout (3s)".into()))?
+        .map_err(|_| GatewayError::Deepgram("WebSocket handshake timeout".into()))?
         .map_err(|e| {
-            // Invalidate DNS cache on failure (IP may have changed)
             tokio::spawn(async { invalidate_dns_cache().await });
-            GatewayError::Deepgram(format!("connection failed: {e}"))
+            GatewayError::Deepgram(format!("WebSocket handshake failed: {e}"))
         })?;
 
         tracing::info!(sample_rate, "Connected to Deepgram streaming API");
