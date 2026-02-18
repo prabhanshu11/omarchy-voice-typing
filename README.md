@@ -1,9 +1,11 @@
 # Voice Typing Gateway
 
-A Go gateway providing speech-to-text for `hyprwhspr`. Supports two backends:
+A Rust gateway providing speech-to-text for `hyprwhspr`. Supports two backends:
 
 1. **Streaming (Deepgram Nova-2)** — Real-time WebSocket transcription. Audio streams during recording, transcript appears ~1-2s after you stop speaking. **Currently active.**
 2. **Batch (AssemblyAI)** — REST upload + polling. Full audio uploaded after recording stops, 10-20s processing delay. Available as fallback.
+
+> **Migrated from Go to Rust** (Feb 2026). See [MIGRATION_CHECKLIST.md](MIGRATION_CHECKLIST.md) for details. The Go source remains in `gateway/` for reference but is no longer used.
 
 ## Architecture
 
@@ -11,9 +13,9 @@ A Go gateway providing speech-to-text for `hyprwhspr`. Supports two backends:
 ┌──────────────────────────────────────────────────────────────┐
 │ Streaming mode (realtime-ws) — ACTIVE                        │
 │                                                              │
-│ hyprwhspr ←──WebSocket──→ Go Gateway ←──WebSocket──→ Deepgram│
-│ (records audio,           (protocol     (Nova-2 streaming    │
-│  sends PCM16 chunks       translator)    STT, $0.35/hr)     │
+│ hyprwhspr ←──WebSocket──→ Rust Gateway ←──WebSocket──→ Deepgram│
+│ (records audio,           (protocol       (Nova-2 streaming  │
+│  sends PCM16 chunks       translator)      STT, $0.35/hr)   │
 │  via OpenAI Realtime                                         │
 │  protocol)                                                   │
 └──────────────────────────────────────────────────────────────┘
@@ -21,19 +23,26 @@ A Go gateway providing speech-to-text for `hyprwhspr`. Supports two backends:
 ┌──────────────────────────────────────────────────────────────┐
 │ Batch mode (rest-api) — FALLBACK                             │
 │                                                              │
-│ hyprwhspr ──POST WAV──→ Go Gateway ──upload+poll──→ AssemblyAI│
-│ (records full audio,     (REST proxy)  (batch STT,           │
-│  sends WAV file)                        10-20s delay)        │
+│ hyprwhspr ──POST WAV──→ Rust Gateway ──upload+poll──→ AssemblyAI│
+│ (records full audio,     (REST proxy)    (batch STT,         │
+│  sends WAV file)                          10-20s delay)      │
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│ Offline fallback (automatic)                                 │
+│                                                              │
+│ Deepgram fails → try LAN whisper (desktop GPU via Tailscale) │
+│                → try local whisper (laptop CPU)              │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ### Streaming flow (per utterance)
 
-1. hyprwhspr starts → connects WebSocket to gateway (`ws://127.0.0.1:8765/v1/realtime`)
+1. hyprwhspr starts → connects WebSocket to gateway (`ws://127.0.0.1:8766/v1/realtime`)
 2. Gateway sends `session.created`, hyprwhspr sends `session.update`
-3. Gateway opens Deepgram WebSocket (`wss://api.deepgram.com/v1/listen`)
-4. User presses keybind → hyprwhspr sends `input_audio_buffer.clear` (new recording)
-5. During recording: hyprwhspr sends `input_audio_buffer.append` (base64 PCM16 at 24kHz)
+3. User presses keybind → hyprwhspr sends `input_audio_buffer.clear` (new recording)
+4. During recording: hyprwhspr sends `input_audio_buffer.append` (base64 PCM16 at 24kHz)
+5. Gateway lazily opens Deepgram WebSocket on first audio chunk
 6. Gateway decodes base64 → forwards raw PCM16 to Deepgram as binary WebSocket frames
 7. Deepgram returns interim/final transcript segments in real-time
 8. User presses keybind again → hyprwhspr sends `input_audio_buffer.commit`
@@ -41,48 +50,70 @@ A Go gateway providing speech-to-text for `hyprwhspr`. Supports two backends:
 10. Gateway applies spelling replacements, sends `conversation.item.input_audio_transcription.completed`
 11. hyprwhspr pastes transcript via clipboard
 12. Gateway archives audio (WAV) and transcript (TXT) in background
-13. Deepgram connection closed; reconnects lazily on next utterance
 
-### Key detail: Deepgram lifecycle
+### Key details
 
-Deepgram streaming connections are **per-utterance**, not persistent. Each recording cycle (clear → append × N → commit) gets a fresh Deepgram WebSocket. The hyprwhspr↔gateway WebSocket stays open across utterances.
+- **Deepgram connections are per-utterance**, not persistent. Each recording cycle gets a fresh WebSocket. The hyprwhspr↔gateway WebSocket stays open across utterances.
+- **Offline fallback is automatic**: if Deepgram connect fails, the gateway accumulates audio and transcribes via local whisper at commit time. Background reconnection probes run every 5s.
+- **Graceful shutdown**: SIGTERM/SIGINT cancels in-flight WebSocket sessions with a 3s drain period.
 
 ## Structure
-- `gateway/` — Go source code
-  - `cmd/server/main.go` — Entry point, API key loading, route registration
-  - `internal/handlers/realtime.go` — OpenAI Realtime ↔ Deepgram protocol translator
-  - `internal/handlers/handlers.go` — REST `/v1/transcribe` handler (AssemblyAI batch)
-  - `internal/deepgram/streaming.go` — Deepgram WebSocket client
-  - `internal/assemblyai/assemblyai.go` — AssemblyAI REST client
-  - `internal/auth/gpg.go` — GPG/pass-based key loading
+
+- `gateway-rs/` — **Rust source code (active)**
+  - `src/main.rs` — Entry point, config loading, server startup
+  - `src/lib.rs` — Router builder (CORS, SPA serving, all routes)
+  - `src/handlers/realtime.rs` — WebSocket upgrade + message dispatch
+  - `src/handlers/realtime_session.rs` — Full session state machine (Deepgram, offline fallback, logging)
+  - `src/handlers/transcribe.rs` — REST `/v1/transcribe` handler (AssemblyAI batch)
+  - `src/handlers/web.rs` — Web UI endpoints (recordings, transcripts, audio, stats)
+  - `src/deepgram/streaming.rs` — Deepgram WebSocket client
+  - `src/assemblyai/client.rs` — AssemblyAI REST client
+  - `src/transcription/` — Offline fallback chain (LAN whisper → local whisper)
+  - `src/logging/` — Session timeline logs + latency JSONL metrics
+  - `tests/e2e_test.rs` — 16 end-to-end integration tests
+- `gateway/` — Go source code (legacy, kept for reference)
+- `local-whisper/` — Python whisper inference server
+- `streaming/` — Python audio pipeline (chunker, VAD, parallel sender)
+- `web/` — React/TypeScript dashboard UI
 - `config/replacements.json` — Custom spelling corrections
 - `hyprwhspr-configs/` — Config presets for switching backends
-- `tests/` — Python integration tests
+- `scripts/` — Orphan recovery, log tools
+- `tools/` — OSD profiler, audio debugger
+- `test-sessions/` — Structured debugging sessions
 
 ## Prerequisites
-- **Go** (>=1.19)
-- **Deepgram API Key** (for streaming): `DEEPGRAM_API_KEY` env var or in `.env`
-- **AssemblyAI API Key** (for batch fallback): `ASSEMBLYAI_API_KEY` env var or in `.env`
-- **Python `websocket-client`** package (for hyprwhspr realtime-ws backend): `pip install websocket-client`
+
+- **Rust** (stable, edition 2024)
+- **Deepgram API Key** (for streaming): `DEEPGRAM_API_KEY` env var or via `pass api/deepgram`
+- **AssemblyAI API Key** (for batch fallback): `ASSEMBLYAI_API_KEY` env var or via `pass api/assemblyai`
 
 ## Usage
 
 ### Build
+
 ```bash
-cd gateway
-go build -o voice-gateway ./cmd/server
+cd gateway-rs
+cargo build --release
+# Binary: target/release/voice-gateway (~5.1 MB)
 ```
 
 ### Run
+
 ```bash
-# Keys loaded from .env (EnvironmentFile in systemd) or environment
-./voice-gateway
-# → Starting gateway server on :8765
-# → Deepgram API key loaded
-# → AssemblyAI API key loaded
+# Keys loaded from environment or pass (password-store)
+./target/release/voice-gateway
+# → Starting gateway server on 0.0.0.0:8766
+```
+
+### Test
+
+```bash
+cargo test
+# 31 unit tests + 16 e2e tests = 47 total
 ```
 
 ### Monitor
+
 ```bash
 journalctl --user -f -u voice-gateway
 ```
@@ -102,146 +133,76 @@ systemctl --user restart hyprwhspr
 ```
 
 ## API Endpoints
-- `WS /v1/realtime` — OpenAI Realtime protocol (streaming, used by hyprwhspr in `realtime-ws` mode)
-- `POST /v1/transcribe` — REST file upload (batch, used by hyprwhspr in `rest-api` mode)
 
-## Advanced Features
+- `GET /health` — Health check (JSON)
+- `WS /v1/realtime` — OpenAI Realtime protocol (streaming, used by hyprwhspr)
+- `POST /v1/transcribe` — REST file upload (batch, AssemblyAI)
+- `GET /api/recordings` — List audio files
+- `GET /api/transcripts` — List transcript files
+- `GET /api/transcript/{filename}` — Read/update transcript
+- `GET /api/audio/{filename}` — Serve audio with range request support
+- `GET /api/stats` — Aggregate statistics
+- `GET /api/linked` — Recordings matched with transcripts
+- `/*` — SPA fallback (serves `web/dist/` if built)
 
-### Logging & Archival
-The gateway automatically archives all processed data relative to its working directory:
-- **Audio Recordings:** Saved in `recordings/` (e.g., `20260101_120000_filename.wav`).
-- **Transcripts:** Saved in `transcripts/` (e.g., `20260101_120000_uuid.txt`).
+## Logging & Archival
 
-### Custom Word Replacements
-You can define custom spelling corrections (e.g., mapping "Dovac" to "Dvorak") by adding entries to the configuration file.
+The gateway automatically archives all processed data:
+- **Audio Recordings:** `recordings/` (e.g., `20260218_034231_audio.wav`)
+- **Transcripts:** `transcripts/` (e.g., `20260218_034231_deepgram.txt`)
+- **Session Logs:** `logs/sessions/` (timeline with speed profile per recording)
+- **Latency Metrics:** `logs/latency/latency_YYYY-MM-DD.jsonl` (structured per-recording metrics)
 
-**File Location:** `config/replacements.json` (relative to project root)
+## Custom Word Replacements
 
-**How to add entries:**
-Open the file and add a new object to the JSON array. Each object requires:
-- `from`: An array of words/phrases the AI typically mishears.
-- `to`: The single word you want it to be replaced with.
+Define custom spelling corrections in `config/replacements.json`:
 
-**Format Example:**
 ```json
 [
   {
     "from": ["Dovac", "Dovak"],
     "to": "Dvorak"
-  },
-  {
-    "from": ["Omarchy"],
-    "to": "Omarchy"
   }
 ]
 ```
-Changes to this file require a service restart:
-```bash
-sudo systemctl restart voice-gateway
-```
 
-See `project_context.md` for detailed specifications.
+Changes require a service restart: `systemctl --user restart voice-gateway`
 
-## Multi-Machine Development Workflow
+## Performance (vs Go gateway)
 
-This project runs on multiple machines (desktop + laptop). **Git is the ONLY sync method.**
+| Metric | Go | Rust |
+|--------|-----|------|
+| Binary size | 9.8 MB | 5.1 MB |
+| RSS memory | 25.8 MB | 22.7 MB |
+| Heap (VmData) | 144 MB | 43 MB |
+| Transcription latency | ~2.4s | ~2.4s |
 
-### Sync Protocol
-
-**When working on LAPTOP and need to sync to DESKTOP (or vice versa):**
-
-1. **Push to a branch** from current machine:
-   ```bash
-   git checkout -b fix/descriptive-name
-   git add .
-   git commit -m "[voice-typing] Description of changes"
-   git push -u origin fix/descriptive-name
-   ```
-
-2. **On the other machine**, pull the branch:
-   ```bash
-   cd ~/Programs/omarchy-voice-typing
-   git fetch origin
-   git checkout fix/descriptive-name
-   ```
-
-3. **User verifies** the changes work on that machine
-
-4. **Continue working** on the branch until issue is fully resolved
-
-5. **Merge to master** once user is happy:
-   ```bash
-   git checkout master
-   git merge fix/descriptive-name
-   git push origin master
-   ```
-
-### Branch Naming Convention
-- `fix/` - Bug fixes (e.g., `fix/gateway-service-not-running`)
-- `feature/` - New features
-- `test/` - Testing changes
-
-### Related Repos
-Changes may also need to be synced in:
-- `~/Programs/local-bootstrapping` - System config, systemd services, dotfiles
-
-**IMPORTANT:** Same git workflow applies to local-bootstrapping. You CANNOT directly edit files on the other machine. Push to a branch, pull on the other machine, verify with user, then merge.
-
-### Investigation Tracking
-For debugging sessions spanning multiple machines:
-- Use `status.md` in project root to track progress
-- Commit frequently with `[voice-typing]` prefix
-- Document timeline of what was tried and what worked
+Latency is identical because it's dominated by Deepgram (~900ms TLS + 1500ms flush). See [MIGRATION_CHECKLIST.md](MIGRATION_CHECKLIST.md) for full benchmark.
 
 ## Debugging & Profiling
 
 ### OSD Profiler Tool
 
-If you're experiencing issues with the hyprwhspr OSD (On-Screen Display) - such as OSD appearing/disappearing unexpectedly, recordings stopping abruptly, or "falling back to old system" - use the OSD profiler tool.
+For hyprwhspr OSD issues, use `tools/osd_profiler.py`:
 
-**Location**: `tools/osd_profiler.py`
-
-**Quick Start**:
 ```bash
-cd tools
-python osd_profiler.py
+cd tools && python osd_profiler.py
 ```
-
-The profiler provides a **real-time dashboard** showing:
-- OSD daemon status (PID, crashes, restarts)
-- Recording state changes
-- hyprwhspr journal events
-- Gateway transcription activity
-- Alerts for anomalies
-
-**Documentation**: See `tools/README.md` for details
 
 ### Test Sessions
 
-For systematic debugging, use the test session tracking structure:
+For systematic debugging:
 
-**Create a new test session**:
 ```bash
-cd test-sessions
-./new-session.sh "description-of-issue"
+cd test-sessions && ./new-session.sh "description-of-issue"
 ```
 
-This creates a timestamped directory with:
-- Pre-filled template for documenting observations
-- Space for profiler output capture
-- Screenshots and recordings folders
+See `test-sessions/QUICK-START.md` for details.
 
-**Run profiler with capture**:
-```bash
-cd tools
-python osd_profiler.py | tee ../test-sessions/YYYYMMDD-HHMM-description/profiler-output.txt
-```
+## Multi-Machine Development
 
-**Documentation**:
-- `test-sessions/QUICK-START.md` - Step-by-step guide
-- `test-sessions/README.md` - Detailed documentation
-- `test-sessions/INDEX.md` - All test sessions and findings
+This project runs on multiple machines (desktop + laptop). Git is the only sync method.
 
-### Related Docs
-- `~/Programs/misc_work/osd_profiler_plan.md` - Root cause analysis and profiler design
-- `~/Programs/misc_work/hyprwhspr_osd_issues.txt` - Original bug report
+- Push to a branch, pull on the other machine, verify, merge to master
+- See `status.md` for cross-machine debugging notes
+- Related repos: `~/Programs/local-bootstrapping` (system config, systemd services)
