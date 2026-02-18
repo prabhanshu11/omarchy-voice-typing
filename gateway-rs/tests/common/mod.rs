@@ -28,6 +28,11 @@ pub fn test_state(
     local_whisper_url: &str,
     lan_whisper_url: Option<&str>,
 ) -> Arc<voice_gateway::state::AppState> {
+    let latency_logger = voice_gateway::logging::latency::LatencyLogger::new(
+        &std::env::temp_dir().join("voice-gateway-test-latency"),
+    )
+    .expect("failed to create test latency logger");
+
     Arc::new(voice_gateway::state::AppState {
         deepgram_api_key: None, // offline by default in tests
         assemblyai_api_key: None,
@@ -38,6 +43,7 @@ pub fn test_state(
             to: "Dvorak".to_string(),
         }],
         http_client: reqwest::Client::new(),
+        latency_logger: std::sync::Arc::new(latency_logger),
     })
 }
 

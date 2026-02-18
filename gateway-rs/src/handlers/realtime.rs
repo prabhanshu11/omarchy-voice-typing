@@ -48,7 +48,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
         .unwrap_or_default()
         .as_nanos());
 
-    let mut session = RealtimeSession::new(ws_sink, &state);
+    let mut session = RealtimeSession::new(ws_sink, &state, session_id.clone());
 
     // Send session.created
     let created = serde_json::json!({

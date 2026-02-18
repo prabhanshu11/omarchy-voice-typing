@@ -14,11 +14,23 @@ pub struct LatencyMetrics {
     pub request_id: String,
     pub timestamp_unix: u64,
 
+    // Session context
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_number: Option<u32>,
+
     // Server-side timing (milliseconds, -1 = not measured)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub upload_ms: Option<i64>,
+    pub deepgram_connect_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcription_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_commit_ms: Option<i64>,
+
+    // Legacy aliases (batch endpoint compatibility)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_latency_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -26,6 +38,10 @@ pub struct LatencyMetrics {
 
     // Metadata
     pub audio_duration_s: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub backend: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub transcript_id: String,
     pub transcript_length: usize,
@@ -42,11 +58,17 @@ impl LatencyMetrics {
         Self {
             request_id: format!("{}", now.as_nanos()),
             timestamp_unix: now.as_secs(),
-            upload_ms: None,
+            session_id: String::new(),
+            recording_number: None,
+            deepgram_connect_ms: None,
             transcription_ms: None,
+            total_commit_ms: None,
+            upload_ms: None,
             total_latency_ms: None,
             end_to_end_ms: None,
             audio_duration_s: 0.0,
+            audio_bytes: None,
+            backend: String::new(),
             transcript_id: String::new(),
             transcript_length: 0,
             success: false,
@@ -171,13 +193,17 @@ mod tests {
         let mut m = LatencyMetrics::new();
         m.success = true;
         m.transcript_length = 42;
-        m.total_latency_ms = Some(1500);
+        m.total_commit_ms = Some(1500);
+        m.backend = "deepgram".to_string();
 
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("\"success\":true"));
-        assert!(json.contains("\"total_latency_ms\":1500"));
+        assert!(json.contains("\"total_commit_ms\":1500"));
+        assert!(json.contains("\"backend\":\"deepgram\""));
         // Empty strings should be skipped
         assert!(!json.contains("error_message"));
+        // None options should be skipped
+        assert!(!json.contains("upload_ms"));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::audio;
 use crate::deepgram::streaming::StreamingClient;
+use crate::logging::latency::{LatencyLogger, LatencyMetrics};
 use crate::logging::session_log::SessionLog;
 use crate::spelling::{self, CustomSpelling};
 use crate::state::AppState;
@@ -99,12 +100,19 @@ pub struct RealtimeSession {
 
     /// Per-recording session timeline log.
     current_sess_log: Option<SessionLog>,
+
+    /// JSONL latency logger (shared across all sessions via Arc).
+    latency_logger: Arc<LatencyLogger>,
+
+    /// WebSocket session identifier (for latency log correlation).
+    ws_session_id: String,
 }
 
 impl RealtimeSession {
     pub fn new(
         ws_sink: SplitSink<WebSocket, Message>,
         state: &AppState,
+        session_id: String,
     ) -> Self {
         Self {
             client_sink: Arc::new(TokioMutex::new(ws_sink)),
@@ -123,6 +131,8 @@ impl RealtimeSession {
             current_rec: None,
             recording_seq: 0,
             current_sess_log: None,
+            latency_logger: Arc::clone(&state.latency_logger),
+            ws_session_id: session_id,
         }
     }
 
@@ -522,6 +532,26 @@ impl RealtimeSession {
             rec.total_time = rec.start_time.elapsed();
             rec.transcript_len = full_transcript.len();
             tracing::info!("{}", rec.summary());
+        }
+
+        // Log latency metrics to JSONL
+        {
+            let mut metrics = LatencyMetrics::new();
+            metrics.session_id = self.ws_session_id.clone();
+            metrics.recording_number = Some(self.recording_seq);
+            metrics.audio_duration_s = audio_duration;
+            metrics.audio_bytes = Some(audio_data.len());
+            metrics.backend = backend.clone();
+            metrics.transcript_length = full_transcript.len();
+            metrics.transcription_ms = Some(transcribe_elapsed.as_millis() as i64);
+            metrics.success = !full_transcript.is_empty();
+
+            if let Some(rec) = &self.current_rec {
+                metrics.deepgram_connect_ms = Some(rec.connect_time.as_millis() as i64);
+                metrics.total_commit_ms = Some(rec.total_time.as_millis() as i64);
+            }
+
+            self.latency_logger.log(&metrics);
         }
 
         // Write session log
