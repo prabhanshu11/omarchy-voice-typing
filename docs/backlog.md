@@ -149,6 +149,41 @@ audio waveform immediately — even the faint digital noise from HFP activation 
 so they can correlate "headphone switched to talk mode" with "OSD shows audio signal" before
 they start speaking.
 
+## KNOWN BUG: Deepgram nova-2 streaming produces stitching artifacts (observed Feb 18 2026)
+
+**Model confirmed:** Deepgram nova-2 via realtime-ws backend (NOT local-whisper). Confirmed
+from gateway logs: `backend=deepgram`, `Taking ONLINE transcription path (Deepgram)`.
+
+**Symptoms observed in real dictation:**
+- Spurious words inserted at segment boundaries (e.g., "Live" appearing mid-sentence)
+- Words dropped between interim/final segment transitions (e.g., "done" dropped)
+- Tense errors at segment joins ("provide" instead of "provided")
+- The streaming realtime path fires many `Deepgram interim text=` and `Deepgram final text=`
+  events while recording; on `input_audio_buffer.commit`, the full audio is re-submitted for
+  a final authoritative pass — the stitching between streaming interims and the final pass
+  is where artifacts appear
+
+**Root cause:**
+The gateway streams audio to Deepgram in real-time (interim/final segments). When the user
+stops recording, the full buffer is committed and re-transcribed. The injected text is a
+concatenation of realtime segments, which can differ from the final consolidated transcript.
+Segment boundaries (pauses in speech) are particularly error-prone.
+
+**Workaround:** None currently. Speak in complete sentences without long pauses for best results.
+
+**Possible fix:** Inject ONLY the final consolidated transcript (after `input_audio_buffer.commit`)
+rather than stitching realtime streaming segments. This would add ~1.7s latency (Deepgram
+transcription time for the full audio) but produce cleaner output. Trade-off: no live preview
+during recording.
+
+**Evidence:**
+```
+gateway log: Full transcript backend=deepgram transcript="And I have also provide the
+correction so I want to ask you first of all, save this as a known error..."
+user input:  "I have done the test. Live And I have also provided the correction..."
+errors:      "done" dropped, "Live" spuriously inserted, "provided"→"provide"
+```
+
 ## Mic OSD color based on transcription backend
 
 Change the mic overlay color to indicate which backend is being used (Deepgram vs local-whisper vs offline/no connection). Gives immediate visual feedback on connectivity state while recording.
