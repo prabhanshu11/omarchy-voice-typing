@@ -149,40 +149,65 @@ audio waveform immediately — even the faint digital noise from HFP activation 
 so they can correlate "headphone switched to talk mode" with "OSD shows audio signal" before
 they start speaking.
 
-## KNOWN BUG: Deepgram nova-2 streaming produces stitching artifacts (observed Feb 18 2026)
+## BUG: Silent recording failure — BT mic captures near-silence despite RUNNING source (Feb 20 2026)
 
-**Model confirmed:** Deepgram nova-2 via realtime-ws backend (NOT local-whisper). Confirmed
-from gateway logs: `backend=deepgram`, `Taking ONLINE transcription path (Deepgram)`.
+**Severity:** HIGH — user lost 2 recordings worth of work, no error shown.
 
-**Symptoms observed in real dictation:**
-- Spurious words inserted at segment boundaries (e.g., "Live" appearing mid-sentence)
-- Words dropped between interim/final segment transitions (e.g., "done" dropped)
-- Tense errors at segment joins ("provide" instead of "provided")
-- The streaming realtime path fires many `Deepgram interim text=` and `Deepgram final text=`
-  events while recording; on `input_audio_buffer.commit`, the full audio is re-submitted for
-  a final authoritative pass — the stitching between streaming interims and the final pass
-  is where artifacts appear
+**Problem:** Voice typing toggle works (start/stop cycle is clean), gateway receives audio,
+sends to Deepgram, but every recording returns `transcript_len=0`. The saved WAV files contain
+near-silence (RMS 0.1–27.3 on a scale where speech is ~2000+). BT headphones (WH-1000XM6) are
+connected, PipeWire source is RUNNING, `wpctl status` shows volume at 1.00.
 
-**Root cause:**
-The gateway streams audio to Deepgram in real-time (interim/final segments). When the user
-stops recording, the full buffer is committed and re-transcribed. The injected text is a
-concatenation of realtime segments, which can differ from the final consolidated transcript.
-Segment boundaries (pauses in speech) are particularly error-prone.
+**No errors anywhere in the pipeline.** hyprwhspr logs "Recording started" / "Recording stopped",
+gateway logs "Full transcript backend=deepgram transcript=" (empty), status=OK_EMPTY. The failure
+is completely silent — user has no way to know their recording was lost until they stop and get
+nothing.
 
-**Workaround:** None currently. Speak in complete sentences without long pauses for best results.
-
-**Possible fix:** Inject ONLY the final consolidated transcript (after `input_audio_buffer.commit`)
-rather than stitching realtime streaming segments. This would add ~1.7s latency (Deepgram
-transcription time for the full audio) but produce cleaner output. Trade-off: no live preview
-during recording.
-
-**Evidence:**
+**Diagnostic evidence (2026-02-20 02:42 IST):**
 ```
-gateway log: Full transcript backend=deepgram transcript="And I have also provide the
-correction so I want to ask you first of all, save this as a known error..."
-user input:  "I have done the test. Live And I have also provided the correction..."
-errors:      "done" dropped, "Live" spuriously inserted, "provided"→"provide"
+# Gateway logs — audio bytes received but Deepgram returns nothing
+Audio buffer at commit buf_bytes=285696 audio_secs=6.0
+Full transcript backend=deepgram transcript=
+[rec-006] DONE audio=6.0s transcript_len=0
+
+Audio buffer at commit buf_bytes=175104 audio_secs=3.6
+Full transcript backend=deepgram transcript=
+[rec-007] DONE audio=3.6s transcript_len=0
+
+# WAV file analysis — recordings are near-silence
+20260219_211331_audio.wav: 4.4s, 24000Hz, 1ch, 2B, RMS=441.0
+20260219_211305_audio.wav: 3.6s, 24000Hz, 1ch, 2B, RMS=0.1   ← essentially zero
+20260219_211259_audio.wav: 6.0s, 24000Hz, 1ch, 2B, RMS=27.3  ← noise floor
+
+# PipeWire state — source exists and is RUNNING
+Default source: bluez_input.58:18:62:51:EF:4F
+State: RUNNING, float32le 1ch 48000Hz, vol=1.00
+BT profile: HFP (headset-head-unit)
 ```
+
+**Key difference from "mute detection" bug (above):** Mute detection is disabled (`config.json`).
+This time recordings DO complete the full cycle (start → capture → stop → Deepgram → empty result).
+The audio bytes are non-zero in size but contain silence/noise, not speech.
+
+**Hypotheses:**
+1. **BT HFP mic not actually routing audio** — PipeWire shows RUNNING but the SCO link may not
+   be carrying actual mic data. Could be a codec negotiation issue after profile switch.
+2. **Sample rate mismatch** — Source is 48000Hz but gateway expects 24000Hz. If resampling
+   produces zeros, audio would be silent. (WAV files are saved at 24000Hz, so conversion happens.)
+3. **PipeWire node routing issue** — The bluez_input node may be connected to hyprwhspr's capture
+   but not actually receiving data from the hardware SCO channel.
+4. **Stale PipeWire connection** — After the earlier SIGKILL crash, PipeWire's routing to the
+   new hyprwhspr process may be broken despite showing RUNNING.
+
+**Impact:** User gets zero feedback that recording failed. They speak for 3-6 seconds, press
+stop, and the text simply doesn't appear. This happened on the same session where voice typing
+was fixed after the stale recording_status crash — so the user thought the fix didn't work.
+
+**Required fix (two parts):**
+1. **Detection:** Gateway or hyprwhspr should detect when audio RMS is below a threshold after
+   recording stops and WARN the user (play error sound, show notification, log prominently).
+   Don't silently return empty text.
+2. **Root cause:** Investigate why BT mic captures silence when PipeWire reports RUNNING.
 
 ## Mic OSD color based on transcription backend
 
