@@ -63,6 +63,32 @@ pub fn decode_base64_audio(b64: &str) -> Result<Vec<u8>, GatewayError> {
         .map_err(|e| GatewayError::Audio(format!("base64 decode failed: {e}")))
 }
 
+/// Compute RMS (root mean square) of PCM16 audio data.
+///
+/// Returns the RMS value as an f64. For 16-bit audio:
+/// - Silence: < 50
+/// - Background noise: 50-200
+/// - Quiet speech: 200-1000
+/// - Normal speech: 1000-5000
+pub fn compute_rms_i16(pcm: &[u8]) -> f64 {
+    if pcm.len() < 2 {
+        return 0.0;
+    }
+    let num_samples = pcm.len() / 2;
+    let sum_sq: f64 = pcm
+        .chunks_exact(2)
+        .map(|chunk| {
+            let sample = i16::from_le_bytes([chunk[0], chunk[1]]) as f64;
+            sample * sample
+        })
+        .sum();
+    (sum_sq / num_samples as f64).sqrt()
+}
+
+/// Threshold below which audio is considered silence (no usable speech).
+/// Based on empirical data: broken BT mic produces RMS 0-27, normal speech > 500.
+pub const SILENCE_RMS_THRESHOLD: f64 = 100.0;
+
 /// Archive a recording (WAV + transcript) to disk.
 ///
 /// Matches Go's `archiveRecording()`: saves to `../recordings/` and `../transcripts/`

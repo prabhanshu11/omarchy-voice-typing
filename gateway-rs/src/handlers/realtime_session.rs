@@ -471,6 +471,66 @@ impl RealtimeSession {
             rec.audio_duration = audio_duration;
         }
 
+        // Check for silence — skip Deepgram if mic is capturing no audio
+        let audio_rms = audio::compute_rms_i16(&audio_data);
+        if audio_rms < audio::SILENCE_RMS_THRESHOLD {
+            tracing::warn!(
+                rms = format_args!("{:.1}", audio_rms),
+                threshold = audio::SILENCE_RMS_THRESHOLD,
+                audio_secs = format_args!("{:.1}", audio_duration),
+                "SILENCE DETECTED — mic may be broken or muted. Skipping transcription."
+            );
+
+            if let Some(sl) = &mut self.current_sess_log {
+                sl.add_event("GATEWAY", &format!(
+                    "SILENCE DETECTED: rms={:.1} < threshold={:.0}, skipping transcription",
+                    audio_rms, audio::SILENCE_RMS_THRESHOLD
+                ));
+            }
+
+            // Send empty transcript back immediately (don't waste Deepgram API call)
+            self.send_to_client(&serde_json::json!({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": format!("item_{}", std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()),
+                "content_index": 0,
+                "transcript": "",
+            }))
+            .await;
+
+            // Log as SILENCE status (distinct from OK_EMPTY)
+            if let Some(rec) = &mut self.current_rec {
+                rec.backend = "skipped-silence".to_string();
+                rec.total_time = rec.start_time.elapsed();
+                rec.transcript_len = 0;
+                tracing::info!("{}", rec.summary());
+            }
+
+            if let Some(sl) = &mut self.current_sess_log {
+                sl.end_time = Some(std::time::SystemTime::now());
+                sl.transcript = String::new();
+                sl.status = "SILENCE".to_string();
+                sl.write_last_session(&"skipped-silence".to_string());
+            }
+            if let Some(sl) = self.current_sess_log.take() {
+                tokio::task::spawn_blocking(move || sl.write_to_file());
+            }
+
+            // Archive the silent audio for debugging
+            let audio_for_archive = audio_data;
+            tokio::task::spawn_blocking(move || {
+                audio::archive_recording(&audio_for_archive, "", &"silence-detected");
+            });
+
+            self.audio_buffer.clear();
+            self.current_rec = None;
+            return;
+        }
+
+        tracing::info!(rms = format_args!("{:.1}", audio_rms), "Audio level OK");
+
         let transcribe_start = Instant::now();
         let (full_transcript, backend);
 
