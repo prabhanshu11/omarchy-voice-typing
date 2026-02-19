@@ -149,9 +149,10 @@ audio waveform immediately — even the faint digital noise from HFP activation 
 so they can correlate "headphone switched to talk mode" with "OSD shows audio signal" before
 they start speaking.
 
-## BUG: Silent recording failure — BT mic captures near-silence despite RUNNING source (Feb 20 2026)
+## SOLVED: Silent recording failure — BT mic captures near-silence despite RUNNING source (Feb 20 2026)
 
 **Severity:** HIGH — user lost 2 recordings worth of work, no error shown.
+**Status:** SOLVED — root cause identified and mitigated.
 
 **Problem:** Voice typing toggle works (start/stop cycle is clean), gateway receives audio,
 sends to Deepgram, but every recording returns `transcript_len=0`. The saved WAV files contain
@@ -203,11 +204,21 @@ The audio bytes are non-zero in size but contain silence/noise, not speech.
 stop, and the text simply doesn't appear. This happened on the same session where voice typing
 was fixed after the stale recording_status crash — so the user thought the fix didn't work.
 
-**Required fix (two parts):**
-1. **Detection:** Gateway or hyprwhspr should detect when audio RMS is below a threshold after
-   recording stops and WARN the user (play error sound, show notification, log prominently).
-   Don't silently return empty text.
-2. **Root cause:** Investigate why BT mic captures silence when PipeWire reports RUNNING.
+**Root cause (confirmed Feb 20 2026):**
+BT adapter SCO transport gets stuck sending zero-filled frames after process crash/restart.
+The controller firmware enters a bad state where the SCO link is active (PipeWire sees RUNNING)
+but carries no actual mic data. Software resets (PipeWire, bluetooth service, btusb module reload,
+USB authorized toggle) do NOT fix it. Only a full BT adapter power cycle resets the firmware:
+```bash
+bluetoothctl power off && sleep 2 && bluetoothctl power on
+```
+
+**Fixes applied:**
+1. **Detection (commit 7a05334):** Gateway silence detection — computes RMS of audio buffer before
+   sending to Deepgram. If RMS < 100 (silence threshold), skips transcription, logs "SILENCE DETECTED",
+   archives the silent audio for debugging. Status logged as "SILENCE" (distinct from "OK_EMPTY").
+2. **Recovery:** `bluetoothctl power off/on` resets the BT controller firmware. Could be automated
+   in hyprwhspr-toggle-v2 as a fallback when silence is detected on consecutive recordings.
 
 ## Mic OSD color based on transcription backend
 
