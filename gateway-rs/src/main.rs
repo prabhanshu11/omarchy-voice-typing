@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::signal;
 
-use voice_gateway::config::GatewayConfig;
-use voice_gateway::state::AppState;
+use voice_type::config::GatewayConfig;
+use voice_type::state::AppState;
 
 #[tokio::main]
 async fn main() {
@@ -13,7 +13,7 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "voice_gateway=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "voice_type=info,tower_http=info".into()),
         )
         .init();
 
@@ -24,7 +24,7 @@ async fn main() {
     let shutdown_token = shared_state.shutdown.clone();
 
     // Build router with all routes
-    let app = voice_gateway::build_router(shared_state);
+    let app = voice_type::build_router(shared_state);
 
     // Bind and serve
     let addr = SocketAddr::from(([0, 0, 0, 0], port));

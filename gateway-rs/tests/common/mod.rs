@@ -5,8 +5,8 @@ use tokio::net::TcpListener;
 
 /// Start the full gateway router on a random port.
 /// Returns the address to connect to.
-pub async fn start_test_server(state: Arc<voice_gateway::state::AppState>) -> SocketAddr {
-    let app = voice_gateway::build_router(state);
+pub async fn start_test_server(state: Arc<voice_type::state::AppState>) -> SocketAddr {
+    let app = voice_type::build_router(state);
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -27,18 +27,18 @@ pub async fn start_test_server(state: Arc<voice_gateway::state::AppState>) -> So
 pub fn test_state(
     local_whisper_url: &str,
     lan_whisper_url: Option<&str>,
-) -> Arc<voice_gateway::state::AppState> {
-    let latency_logger = voice_gateway::logging::latency::LatencyLogger::new(
+) -> Arc<voice_type::state::AppState> {
+    let latency_logger = voice_type::logging::latency::LatencyLogger::new(
         &std::env::temp_dir().join("voice-gateway-test-latency"),
     )
     .expect("failed to create test latency logger");
 
-    Arc::new(voice_gateway::state::AppState {
+    Arc::new(voice_type::state::AppState {
         deepgram_api_key: None, // offline by default in tests
         assemblyai_api_key: None,
         local_whisper_url: local_whisper_url.to_string(),
         lan_whisper_url: lan_whisper_url.map(|s| s.to_string()),
-        custom_spelling: vec![voice_gateway::spelling::CustomSpelling {
+        custom_spelling: vec![voice_type::spelling::CustomSpelling {
             from: "Dovac".to_string(),
             to: "Dvorak".to_string(),
         }],

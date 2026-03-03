@@ -51,6 +51,19 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
         )
         .route("/api/stats", axum::routing::get(handlers::web::stats))
         .route("/api/linked", axum::routing::get(handlers::web::list_linked))
+        // Profiling endpoints
+        .route(
+            "/api/profiling/latency",
+            axum::routing::get(handlers::profiling::latency),
+        )
+        .route(
+            "/api/profiling/sessions",
+            axum::routing::get(handlers::profiling::sessions),
+        )
+        .route(
+            "/api/profiling/summary",
+            axum::routing::get(handlers::profiling::summary),
+        )
         .with_state(shared_state)
         .layer(CorsLayer::permissive());
 
