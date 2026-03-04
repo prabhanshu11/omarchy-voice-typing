@@ -17,6 +17,7 @@ COPY web/package*.json ./
 RUN npm ci
 COPY web/ .
 ENV NODE_ENV=production
+ENV VITE_BASE_PATH=/voice-typing/
 RUN npx vite build
 
 # ── Stage 3: Runtime ──
