@@ -278,6 +278,9 @@ impl SessionLog {
 
 /// Get session log directory path.
 fn session_log_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("SESSION_LOG_DIR") {
+        return PathBuf::from(dir);
+    }
     if let Some(home) = dirs_or_home() {
         home.join("Programs/omarchy-voice-typing/logs/sessions")
     } else {

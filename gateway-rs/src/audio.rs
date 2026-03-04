@@ -100,7 +100,8 @@ pub fn archive_recording(audio_data: &[u8], transcript: &str, backend: &str, tim
     let timestamp = timestamp_override.unwrap_or_else(chrono_timestamp);
 
     if !audio_data.is_empty() {
-        let dir = Path::new("../recordings");
+        let dir_str = std::env::var("RECORDINGS_DIR").unwrap_or_else(|_| "../recordings".into());
+        let dir = Path::new(&dir_str);
         if let Err(e) = std::fs::create_dir_all(dir) {
             tracing::error!(error = %e, "Failed to create recordings dir");
         } else {
@@ -113,7 +114,8 @@ pub fn archive_recording(audio_data: &[u8], transcript: &str, backend: &str, tim
     }
 
     if !transcript.is_empty() {
-        let dir = Path::new("../transcripts");
+        let dir_str = std::env::var("TRANSCRIPTS_DIR").unwrap_or_else(|_| "../transcripts".into());
+        let dir = Path::new(&dir_str);
         if let Err(e) = std::fs::create_dir_all(dir) {
             tracing::error!(error = %e, "Failed to create transcripts dir");
         } else {

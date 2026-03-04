@@ -331,7 +331,8 @@ async fn poll_transcript(
 ///
 /// Uses a timestamp prefix matching the Go format: `YYYYMMDD_HHMMSS_filename`.
 fn save_recording(original_filename: &str, data: &[u8]) {
-    let dir = Path::new("../recordings");
+    let dir_str = std::env::var("RECORDINGS_DIR").unwrap_or_else(|_| "../recordings".into());
+    let dir = Path::new(&dir_str);
     if let Err(e) = std::fs::create_dir_all(dir) {
         tracing::error!(error = %e, "Failed to create recordings directory");
         return;
@@ -351,7 +352,8 @@ fn save_recording(original_filename: &str, data: &[u8]) {
 ///
 /// Uses a timestamp prefix matching the Go format: `YYYYMMDD_HHMMSS_transcriptID.txt`.
 fn save_transcript(transcript_id: &str, text: &str) {
-    let dir = Path::new("../transcripts");
+    let dir_str = std::env::var("TRANSCRIPTS_DIR").unwrap_or_else(|_| "../transcripts".into());
+    let dir = Path::new(&dir_str);
     if let Err(e) = std::fs::create_dir_all(dir) {
         tracing::error!(error = %e, "Failed to create transcripts directory");
         return;
