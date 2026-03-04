@@ -57,6 +57,9 @@ jobs:
               --name voice-type \
               --restart always \
               -p 8766:8766 \
+              -v voice-type-logs:/app/logs \
+              -v voice-type-recordings:/app/recordings \
+              -v voice-type-transcripts:/app/transcripts \
               -e PORT=8766 \
               -e RUST_LOG=info \
               -e DEEPGRAM_API_KEY="$DEEPGRAM_API_KEY" \

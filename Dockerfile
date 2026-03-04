@@ -27,13 +27,15 @@ COPY --from=rust-builder /app/gateway-rs/target/release/voice-type /usr/local/bi
 COPY --from=web-builder /app/web/dist /app/web/dist
 COPY config /app/config
 
-# Demo data for profiling dashboard (session logs, latency, transcripts)
-COPY deploy/demo-data/logs/ /app/logs/
-COPY deploy/demo-data/transcripts/ /app/transcripts/
-RUN mkdir -p /app/recordings
+# Create data directories (populated via Docker volumes at runtime)
+RUN mkdir -p /app/logs/sessions /app/logs/latency /app/recordings /app/transcripts
 
 WORKDIR /app
 ENV PORT=8766
 ENV RUST_LOG=info
+ENV SESSION_LOG_DIR=/app/logs/sessions
+ENV LATENCY_LOG_DIR=/app/logs/latency
+ENV RECORDINGS_DIR=/app/recordings
+ENV TRANSCRIPTS_DIR=/app/transcripts
 EXPOSE 8766
 CMD ["voice-type"]
