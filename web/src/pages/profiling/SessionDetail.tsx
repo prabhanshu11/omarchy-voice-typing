@@ -5,6 +5,7 @@ import { formatMs } from '../../lib/utils';
 import { TranscriptEditor } from './TranscriptEditor';
 import { SequenceDiagram } from './sequence-diagram/SequenceDiagram';
 import { TimelineWaterfall } from './TimelineWaterfall';
+import { SpeedProfile } from './SpeedProfile';
 
 interface SessionDetailProps {
   session: SessionSummary | null;
@@ -66,6 +67,8 @@ export function SessionDetail({ session }: SessionDetailProps) {
       <SequenceDiagram session={session} />
 
       <TimelineWaterfall session={session} />
+
+      <SpeedProfile session={session} />
     </div>
   );
 }

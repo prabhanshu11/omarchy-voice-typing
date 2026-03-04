@@ -1,0 +1,1 @@
+{"request_id":"1772526711063108352","timestamp_unix":1772526711,"session_id":"sess_1772526707371377340","recording_number":1,"deepgram_connect_ms":1851,"transcription_ms":1834,"total_commit_ms":3686,"audio_duration_s":1.0,"audio_bytes":48000,"backend":"deepgram","transcript_length":0,"success":false}

@@ -17,14 +17,14 @@ bin/
 gateway/voice-gateway
 gateway/server
 
-# Audio recordings
-recordings/
+# Audio recordings (root only)
+/recordings/
 
-# Transcripts
-transcripts/
+# Transcripts (root only)
+/transcripts/
 
-# Logs
-logs/
+# Logs (root only)
+/logs/
 
 # Working notes
 progress_actual.md

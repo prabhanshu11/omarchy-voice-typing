@@ -25,6 +25,10 @@ pub struct AppState {
     pub rec_counter: Arc<AtomicU32>,
     /// Global recording counter for web sessions (webrec-001, webrec-002, ...)
     pub webrec_counter: Arc<AtomicU32>,
+    /// Directory containing latency_*.jsonl files for profiling endpoints.
+    pub latency_log_dir: PathBuf,
+    /// Directory containing session .log files for profiling endpoints.
+    pub session_log_dir: PathBuf,
 }
 
 impl std::fmt::Debug for AppState {
@@ -66,6 +70,8 @@ impl AppState {
             shutdown: CancellationToken::new(),
             rec_counter: Arc::new(AtomicU32::new(0)),
             webrec_counter: Arc::new(AtomicU32::new(0)),
+            latency_log_dir: latency_dir,
+            session_log_dir: session_log_dir(),
         })
     }
 }
@@ -76,5 +82,14 @@ fn latency_log_dir() -> PathBuf {
         PathBuf::from(home).join("Programs/omarchy-voice-typing/logs/latency")
     } else {
         PathBuf::from("../logs/latency")
+    }
+}
+
+/// Resolve session log directory — same pattern as latency_log_dir.
+fn session_log_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join("Programs/omarchy-voice-typing/logs/sessions")
+    } else {
+        PathBuf::from("../logs/sessions")
     }
 }

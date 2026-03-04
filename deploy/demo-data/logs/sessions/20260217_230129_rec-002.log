@@ -1,0 +1,30 @@
+=== SESSION rec-002 ===
+Started:     2026-02-17 23:01:29.582
+Ended:       2026-02-17 23:01:29.651
+Duration:    0.1s
+
+--- TIMELINE ---
+T+0.000s     [GATEWAY     ] rec-002 started (offline=true)
+T+0.000s     [GATEWAY     ] first audio chunk: 4800 bytes
+T+0.040s     [GATEWAY     ] commit received
+T+0.040s     [GATEWAY     ] taking OFFLINE transcription path
+T+0.069s     [GATEWAY     ] commit complete: backend=local-whisper, transcript=23 chars
+
+--- SPEED PROFILE ---
+Deepgram connect:     N/A
+First audio to GW:    0ms
+Transcription:        28ms
+Total (start→text):   68ms
+
+--- AUDIO CHAIN ---
+Python WS chunks:     3
+Gateway bytes:        14400
+
+--- DATA FLOW ---
+Toggle       -> Python WS    -> Gateway      -> Transcribe  
+OK              OK              OK              OK          
+
+--- DISPOSITION ---
+Status:       OK
+Archived WAV: (none)
+Transcript:   "hello world from Dvorak" (23 chars)

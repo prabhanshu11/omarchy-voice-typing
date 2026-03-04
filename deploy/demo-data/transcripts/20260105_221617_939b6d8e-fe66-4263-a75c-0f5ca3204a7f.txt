@@ -1,0 +1,1 @@
+But right now when I type, I do see the predictions. For example, when I type C, a long text comes up, which is like copyright. And many times a lot of words, English language words are also popping up.

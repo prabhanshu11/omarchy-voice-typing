@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { SessionDetail } from '../../pages/profiling/SessionDetail';
 import type { SessionSummary } from '../../lib/types';
@@ -27,6 +27,7 @@ const okSession: SessionSummary = {
     { elapsed_s: 4.287, layer: 'GATEWAY', event: 'taking ONLINE transcription path (Deepgram)' },
     { elapsed_s: 6.213, layer: 'GATEWAY', event: 'commit complete: backend=deepgram, transcript=53 chars' },
   ],
+  wav_filename: '20260226_190639_audio.wav',
 };
 
 describe('SessionDetail', () => {
@@ -60,7 +61,7 @@ describe('SessionDetail', () => {
     // Simulate the audio element failing to load
     fireEvent.error(audio!);
 
-    expect(screen.getByText('No audio saved for this session')).toBeInTheDocument();
+    expect(screen.getByText('Audio file not found')).toBeInTheDocument();
     // Audio element should be gone
     expect(document.querySelector('audio')).toBeNull();
   });

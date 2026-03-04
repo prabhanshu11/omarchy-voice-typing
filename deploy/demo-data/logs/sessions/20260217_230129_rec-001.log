@@ -1,0 +1,30 @@
+=== SESSION rec-001 ===
+Started:     2026-02-17 23:01:29.506
+Ended:       2026-02-17 23:01:29.595
+Duration:    0.1s
+
+--- TIMELINE ---
+T+0.000s     [GATEWAY     ] rec-001 started (offline=false)
+T+0.000s     [GATEWAY     ] first audio chunk: 4800 bytes
+T+0.040s     [GATEWAY     ] commit received
+T+0.040s     [GATEWAY     ] taking OFFLINE transcription path
+T+0.089s     [GATEWAY     ] commit complete: backend=local-whisper, transcript=21 chars
+
+--- SPEED PROFILE ---
+Deepgram connect:     N/A
+First audio to GW:    0ms
+Transcription:        49ms
+Total (start→text):   89ms
+
+--- AUDIO CHAIN ---
+Python WS chunks:     3
+Gateway bytes:        14400
+
+--- DATA FLOW ---
+Toggle       -> Python WS    -> Gateway      -> Transcribe  
+OK              OK              OK              OK          
+
+--- DISPOSITION ---
+Status:       OK
+Archived WAV: (none)
+Transcript:   "local fallback worked" (21 chars)

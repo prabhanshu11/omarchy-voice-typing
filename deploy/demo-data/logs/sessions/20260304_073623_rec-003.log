@@ -1,0 +1,29 @@
+=== SESSION rec-003 ===
+Started:     2026-03-04 07:36:23.516
+Ended:       2026-03-04 07:36:23.558
+Duration:    0.0s
+
+--- TIMELINE ---
+T+0.000s     [GATEWAY     ] rec-003 started (offline=true)
+T+0.000s     [GATEWAY     ] first audio chunk: 4800 bytes
+T+0.042s     [GATEWAY     ] commit received
+T+0.042s     [GATEWAY     ] SILENCE DETECTED: rms=0.0 < threshold=100, skipping transcription
+
+--- SPEED PROFILE ---
+Deepgram connect:     N/A
+First audio to GW:    0ms
+Transcription:        N/A
+Total (start→text):   N/A
+
+--- AUDIO CHAIN ---
+Python WS chunks:     2
+Gateway bytes:        9600
+
+--- DATA FLOW ---
+Toggle       -> Python WS    -> Gateway      -> Transcribe  
+OK              OK              OK              FAIL        
+
+--- DISPOSITION ---
+Status:       SILENCE
+Archived WAV: (none)
+Transcript:   (none)
