@@ -378,6 +378,10 @@ pub fn parse_session_log(filename: &str, content: &str) -> Option<SessionSummary
             backend = "deepgram".to_string();
             break;
         }
+        if event_lower.contains("backend=assemblyai") {
+            backend = "assemblyai".to_string();
+            break;
+        }
         if event_lower.contains("backend=local-whisper") || event_lower.contains("offline") {
             backend = "local-whisper".to_string();
             // Don't break — deepgram might appear later
