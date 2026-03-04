@@ -69,7 +69,14 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
 
     // SPA static file serving: serve web/dist/ with index.html fallback.
     // If the directory doesn't exist (frontend not built), skip gracefully.
-    let spa_dir = std::path::Path::new("../web/dist");
+    // WEB_DIST_DIR env var allows Docker to override the path.
+    let default_spa = if std::path::Path::new("web/dist").is_dir() {
+        "web/dist"
+    } else {
+        "../web/dist"
+    };
+    let spa_path = std::env::var("WEB_DIST_DIR").unwrap_or_else(|_| default_spa.to_string());
+    let spa_dir = std::path::Path::new(&spa_path);
     if spa_dir.is_dir() {
         let index = spa_dir.join("index.html");
         api.fallback_service(ServeDir::new(spa_dir).fallback(ServeFile::new(index)))

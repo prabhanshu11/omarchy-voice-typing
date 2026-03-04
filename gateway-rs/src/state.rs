@@ -76,8 +76,22 @@ impl AppState {
     }
 }
 
-/// Resolve latency log directory — consistent with session_log's approach.
+/// Resolve latency log directory.
+/// Checks LATENCY_LOG_DIR env, then tries CWD-relative paths, then HOME-based path.
 fn latency_log_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("LATENCY_LOG_DIR") {
+        return PathBuf::from(dir);
+    }
+    // Docker layout: /app/logs/latency
+    let cwd_path = PathBuf::from("logs/latency");
+    if cwd_path.is_dir() {
+        return cwd_path;
+    }
+    // Local dev layout: ../logs/latency (CWD is gateway-rs/)
+    let local_path = PathBuf::from("../logs/latency");
+    if local_path.is_dir() {
+        return local_path;
+    }
     if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join("Programs/omarchy-voice-typing/logs/latency")
     } else {
@@ -87,6 +101,17 @@ fn latency_log_dir() -> PathBuf {
 
 /// Resolve session log directory — same pattern as latency_log_dir.
 fn session_log_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("SESSION_LOG_DIR") {
+        return PathBuf::from(dir);
+    }
+    let cwd_path = PathBuf::from("logs/sessions");
+    if cwd_path.is_dir() {
+        return cwd_path;
+    }
+    let local_path = PathBuf::from("../logs/sessions");
+    if local_path.is_dir() {
+        return local_path;
+    }
     if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join("Programs/omarchy-voice-typing/logs/sessions")
     } else {

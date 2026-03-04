@@ -15,8 +15,23 @@ use crate::error::GatewayError;
 // Directory paths (relative to gateway binary working dir)
 // ---------------------------------------------------------------------------
 
-const RECORDINGS_DIR: &str = "../recordings";
-const TRANSCRIPTS_DIR: &str = "../transcripts";
+fn recordings_dir() -> &'static str {
+    static DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        if let Ok(d) = std::env::var("RECORDINGS_DIR") { return d; }
+        if std::path::Path::new("recordings").is_dir() { return "recordings".into(); }
+        "../recordings".into()
+    })
+}
+
+fn transcripts_dir() -> &'static str {
+    static DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        if let Ok(d) = std::env::var("TRANSCRIPTS_DIR") { return d; }
+        if std::path::Path::new("transcripts").is_dir() { return "transcripts".into(); }
+        "../transcripts".into()
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -206,7 +221,7 @@ async fn scan_dir(
 
 /// GET /api/recordings — list all .wav/.mp3 files, sorted newest first.
 pub async fn list_recordings() -> Result<Json<Vec<Recording>>, GatewayError> {
-    let dir = Path::new(RECORDINGS_DIR);
+    let dir = Path::new(recordings_dir());
     let entries = scan_dir(dir, is_audio_file).await?;
 
     let mut recordings: Vec<Recording> = entries
@@ -231,7 +246,7 @@ pub async fn list_recordings() -> Result<Json<Vec<Recording>>, GatewayError> {
 
 /// GET /api/transcripts — list all .txt files, sorted newest first.
 pub async fn list_transcripts() -> Result<Json<Vec<Transcript>>, GatewayError> {
-    let dir = Path::new(TRANSCRIPTS_DIR);
+    let dir = Path::new(transcripts_dir());
     let entries = scan_dir(dir, is_transcript_file).await?;
 
     let mut transcripts: Vec<Transcript> = entries
@@ -261,7 +276,7 @@ pub async fn get_transcript(
     let filename = sanitize_filename(&raw_filename)
         .ok_or_else(|| GatewayError::BadRequest("invalid filename".into()))?;
 
-    let path = Path::new(TRANSCRIPTS_DIR).join(&filename);
+    let path = Path::new(transcripts_dir()).join(&filename);
 
     let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -291,7 +306,7 @@ pub async fn update_transcript(
     let filename = sanitize_filename(&raw_filename)
         .ok_or_else(|| GatewayError::BadRequest("invalid filename".into()))?;
 
-    let path = Path::new(TRANSCRIPTS_DIR).join(&filename);
+    let path = Path::new(transcripts_dir()).join(&filename);
 
     // Verify the file exists before writing
     if !path.exists() {
@@ -315,7 +330,7 @@ pub async fn serve_audio(
     let filename = sanitize_filename(&raw_filename)
         .ok_or_else(|| GatewayError::BadRequest("invalid filename".into()))?;
 
-    let path = Path::new(RECORDINGS_DIR).join(&filename);
+    let path = Path::new(recordings_dir()).join(&filename);
 
     let metadata = tokio::fs::metadata(&path).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -374,8 +389,8 @@ pub async fn serve_audio(
 
 /// GET /api/stats — count recordings and transcripts, sum their sizes.
 pub async fn stats() -> Result<Json<Stats>, GatewayError> {
-    let rec_dir = Path::new(RECORDINGS_DIR);
-    let tx_dir = Path::new(TRANSCRIPTS_DIR);
+    let rec_dir = Path::new(recordings_dir());
+    let tx_dir = Path::new(transcripts_dir());
 
     let mut total_recordings = 0usize;
     let mut total_audio_bytes = 0u64;
@@ -409,8 +424,8 @@ pub async fn stats() -> Result<Json<Stats>, GatewayError> {
 /// GET /api/linked — match recordings and transcripts by timestamp prefix
 /// (YYYYMMDD_HHMM), returning linked pairs sorted newest first.
 pub async fn list_linked() -> Result<Json<Vec<LinkedEntry>>, GatewayError> {
-    let rec_dir = Path::new(RECORDINGS_DIR);
-    let tx_dir = Path::new(TRANSCRIPTS_DIR);
+    let rec_dir = Path::new(recordings_dir());
+    let tx_dir = Path::new(transcripts_dir());
 
     // Build recordings map keyed by minute-resolution timestamp
     let mut recordings: BTreeMap<String, Recording> = BTreeMap::new();
