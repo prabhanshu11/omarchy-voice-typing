@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -96,7 +96,6 @@ pub struct RealtimeSession {
 
     /// Per-recording structured log.
     current_rec: Option<RecordingLog>,
-    recording_seq: u32,
 
     /// Per-recording session timeline log.
     current_sess_log: Option<SessionLog>,
@@ -106,6 +105,12 @@ pub struct RealtimeSession {
 
     /// WebSocket session identifier (for latency log correlation).
     ws_session_id: String,
+
+    /// Source of the client ("desktop" for hyprwhspr, "web" for browser).
+    source: String,
+
+    /// Global recording counter (shared across all sessions of same source).
+    rec_counter: Arc<AtomicU32>,
 }
 
 impl RealtimeSession {
@@ -129,10 +134,11 @@ impl RealtimeSession {
             last_deepgram_try: Instant::now() - DEEPGRAM_RETRY_INTERVAL,
             reconnecting: Arc::new(AtomicBool::new(false)),
             current_rec: None,
-            recording_seq: 0,
             current_sess_log: None,
             latency_logger: Arc::clone(&state.latency_logger),
             ws_session_id: session_id,
+            source: "desktop".to_string(),
+            rec_counter: Arc::clone(&state.rec_counter),
         }
     }
 
@@ -319,8 +325,19 @@ impl RealtimeSession {
     // Message handlers
     // ──────────────────────────────────────────────
 
-    pub async fn handle_session_update(&mut self) {
-        tracing::info!(offline = %self.is_offline(), "session.update received");
+    pub async fn handle_session_update(&mut self, event: &RealtimeEvent, state: &AppState) {
+        // Parse source from session.update payload (defaults to "desktop")
+        if let Some(session) = &event.session {
+            if let Some(source) = session.get("source").and_then(|v| v.as_str()) {
+                if source == "web" {
+                    self.source = "web".to_string();
+                    self.rec_counter = Arc::clone(&state.webrec_counter);
+                    tracing::info!(source = "web", "Web client identified");
+                }
+            }
+        }
+
+        tracing::info!(offline = %self.is_offline(), source = %self.source, "session.update received");
         self.session_ready = true;
 
         // Do NOT eagerly connect to Deepgram here. The connection would sit idle
@@ -370,8 +387,9 @@ impl RealtimeSession {
 
         // Start new recording log on first chunk
         if was_empty {
-            self.recording_seq += 1;
-            let rec_id = format!("rec-{:03}", self.recording_seq);
+            let seq = self.rec_counter.fetch_add(1, Ordering::SeqCst) + 1;
+            let prefix = if self.source == "web" { "webrec" } else { "rec" };
+            let rec_id = format!("{prefix}-{seq:03}");
             let offline = self.is_offline();
 
             self.current_rec = Some(RecordingLog {
@@ -521,7 +539,7 @@ impl RealtimeSession {
             // Archive the silent audio for debugging
             let audio_for_archive = audio_data;
             tokio::task::spawn_blocking(move || {
-                audio::archive_recording(&audio_for_archive, "", &"silence-detected");
+                audio::archive_recording(&audio_for_archive, "", &"silence-detected", None);
             });
 
             self.audio_buffer.clear();
@@ -598,7 +616,7 @@ impl RealtimeSession {
         {
             let mut metrics = LatencyMetrics::new();
             metrics.session_id = self.ws_session_id.clone();
-            metrics.recording_number = Some(self.recording_seq);
+            metrics.recording_number = Some(self.rec_counter.load(Ordering::SeqCst));
             metrics.audio_duration_s = audio_duration;
             metrics.audio_bytes = Some(audio_data.len());
             metrics.backend = backend.clone();
@@ -614,6 +632,14 @@ impl RealtimeSession {
             self.latency_logger.log(&metrics);
         }
 
+        // Capture session start timestamp for archive filename consistency
+        let archive_timestamp = self.current_sess_log.as_ref().map(|sl| {
+            let dur = sl.start_time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            let secs = dur.as_secs();
+            let (y, m, d, h, min, s) = audio::timestamp_parts(secs);
+            format!("{y:04}{m:02}{d:02}_{h:02}{min:02}{s:02}")
+        });
+
         // Write session log
         if let Some(sl) = &mut self.current_sess_log {
             sl.end_time = Some(std::time::SystemTime::now());
@@ -623,10 +649,12 @@ impl RealtimeSession {
             sl.status = if !full_transcript.is_empty() {
                 "OK".to_string()
             } else {
-                // Empty transcript from a successful pipeline = no speech detected,
-                // not an error. "FAILED" should only be used for actual pipeline errors.
                 "OK_EMPTY".to_string()
             };
+            // Set wav_path so session log includes the audio filename
+            if let Some(ref ts) = archive_timestamp {
+                sl.wav_path = format!("{ts}_audio.wav");
+            }
             sl.add_event(
                 "GATEWAY",
                 &format!("commit complete: backend={backend}, transcript={} chars", full_transcript.len()),
@@ -642,12 +670,12 @@ impl RealtimeSession {
         self.audio_buffer.clear();
         self.current_rec = None;
 
-        // Archive audio and transcript in background
+        // Archive audio and transcript in background (use session start timestamp for filename)
         let audio_for_archive = audio_data;
         let transcript_for_archive = full_transcript;
         let backend_for_archive = backend.clone();
         tokio::task::spawn_blocking(move || {
-            audio::archive_recording(&audio_for_archive, &transcript_for_archive, &backend_for_archive);
+            audio::archive_recording(&audio_for_archive, &transcript_for_archive, &backend_for_archive, archive_timestamp);
         });
 
         // If offline, try async reconnection for next recording
@@ -721,7 +749,7 @@ impl RealtimeSession {
             // Archive audio for debugging (no transcription)
             let audio_data = self.audio_buffer.clone();
             tokio::task::spawn_blocking(move || {
-                audio::archive_recording(&audio_data, "", "cleared");
+                audio::archive_recording(&audio_data, "", "cleared", None);
             });
 
             if let Some(sl) = &mut self.current_sess_log {

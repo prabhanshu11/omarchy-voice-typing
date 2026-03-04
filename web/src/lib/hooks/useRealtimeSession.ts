@@ -95,7 +95,7 @@ export function useRealtimeSession(): UseRealtimeSessionReturn {
 
         switch (msg.type) {
           case 'session.created':
-            ws.send(JSON.stringify({ type: 'session.update', session: {} }));
+            ws.send(JSON.stringify({ type: 'session.update', session: { source: 'web' } }));
             break;
 
           case 'session.updated':

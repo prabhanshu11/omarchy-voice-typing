@@ -103,7 +103,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
         };
 
         match event.event_type.as_str() {
-            "session.update" => session.handle_session_update().await,
+            "session.update" => session.handle_session_update(&event, &state).await,
             "input_audio_buffer.append" => session.handle_audio_append(&event).await,
             "input_audio_buffer.commit" => session.handle_audio_commit().await,
             "input_audio_buffer.clear" => session.handle_audio_clear().await,
