@@ -15,7 +15,7 @@ describe('fetchLinked', () => {
 
     const result = await fetchLinked();
     expect(result).toEqual(data);
-    expect(mockFetch).toHaveBeenCalledWith('/api/linked');
+    expect(mockFetch).toHaveBeenCalledWith('/api/linked', { cache: 'no-store' });
   });
 
   it('throws on error', async () => {
@@ -49,14 +49,14 @@ describe('fetchLatency', () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve([]) });
 
     await fetchLatency('2026-02-18', '2026-02-22');
-    expect(mockFetch).toHaveBeenCalledWith('/api/profiling/latency?from=2026-02-18&to=2026-02-22');
+    expect(mockFetch).toHaveBeenCalledWith('/api/profiling/latency?from=2026-02-18&to=2026-02-22', { cache: 'no-store' });
   });
 
   it('builds URL without params', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve([]) });
 
     await fetchLatency();
-    expect(mockFetch).toHaveBeenCalledWith('/api/profiling/latency');
+    expect(mockFetch).toHaveBeenCalledWith('/api/profiling/latency', { cache: 'no-store' });
   });
 });
 
@@ -65,7 +65,7 @@ describe('fetchSessions', () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve([]) });
 
     await fetchSessions('2026-02-18', undefined, 100);
-    expect(mockFetch).toHaveBeenCalledWith('/api/profiling/sessions?from=2026-02-18&limit=100');
+    expect(mockFetch).toHaveBeenCalledWith('/api/profiling/sessions?from=2026-02-18&limit=100', { cache: 'no-store' });
   });
 });
 

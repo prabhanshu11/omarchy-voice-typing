@@ -1,0 +1,1 @@
+Can you confirm that the current neovim setup and the current prediction Sorry, text complete is not going to interfere with my plugin. If it is, just let me know and we will decide if you have to turn it off or some third way.

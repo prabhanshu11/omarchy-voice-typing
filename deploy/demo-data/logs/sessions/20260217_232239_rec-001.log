@@ -1,0 +1,31 @@
+=== SESSION rec-001 ===
+Started:     2026-02-17 23:22:39.469
+Ended:       2026-02-17 23:22:40.502
+Duration:    1.0s
+
+--- TIMELINE ---
+T+0.000s     [GATEWAY     ] rec-001 started (offline=false)
+T+0.000s     [GATEWAY     ] first audio chunk: 4800 bytes
+T+0.993s     [DEEPGRAM    ] connect FAILED after 992.734226ms: deepgram error: connection failed: TLS error: native-tls error: error:0A000086:SSL routines:tls_post_process_server_certificate:certificate verify failed:ssl/statem/statem_clnt.c:2125: (IP address mismatch)
+T+0.994s     [GATEWAY     ] commit received
+T+0.994s     [GATEWAY     ] taking OFFLINE transcription path
+T+1.033s     [GATEWAY     ] commit complete: backend=none, transcript=0 chars
+
+--- SPEED PROFILE ---
+Deepgram connect:     N/A
+First audio to GW:    0ms
+Transcription:        38ms
+Total (start→text):   1032ms
+
+--- AUDIO CHAIN ---
+Python WS chunks:     5
+Gateway bytes:        24000
+
+--- DATA FLOW ---
+Toggle       -> Python WS    -> Gateway      -> Transcribe  
+OK              OK              OK              FAIL        
+
+--- DISPOSITION ---
+Status:       FAILED
+Archived WAV: (none)
+Transcript:   (none)

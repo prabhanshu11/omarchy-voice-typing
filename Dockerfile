@@ -25,7 +25,14 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 COPY --from=rust-builder /app/gateway-rs/target/release/voice-type /usr/local/bin/
 COPY --from=web-builder /app/web/dist /app/web/dist
 COPY config /app/config
-WORKDIR /app/gateway-rs
+
+# Demo data for profiling dashboard (session logs, latency, transcripts)
+COPY deploy/demo-data/logs/ /app/logs/
+COPY deploy/demo-data/transcripts/ /app/transcripts/
+RUN mkdir -p /app/recordings
+
+WORKDIR /app
 ENV PORT=8766
+ENV RUST_LOG=info
 EXPOSE 8766
 CMD ["voice-type"]

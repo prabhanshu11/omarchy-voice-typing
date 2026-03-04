@@ -1,0 +1,1 @@
+Okay, create a commit that we had to shift it back to whatever we just shifted it back to. And we have to still implement the streaming method properly with the assembly AI API solution that we have here with Open Whisper.

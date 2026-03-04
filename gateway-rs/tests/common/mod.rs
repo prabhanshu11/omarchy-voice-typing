@@ -45,6 +45,10 @@ pub fn test_state(
         http_client: reqwest::Client::new(),
         latency_logger: std::sync::Arc::new(latency_logger),
         shutdown: tokio_util::sync::CancellationToken::new(),
+        rec_counter: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        webrec_counter: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        latency_log_dir: std::env::temp_dir().join("voice-gateway-test-latency"),
+        session_log_dir: std::env::temp_dir().join("voice-gateway-test-sessions"),
     })
 }
 

@@ -1,11 +1,13 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::Query;
+use axum::extract::{Query, State};
 use serde::{Deserialize, Serialize};
 
 use crate::error::GatewayError;
+use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
 // Query parameters
@@ -132,26 +134,6 @@ pub struct DailyCount {
     pub total: usize,
     pub success: usize,
     pub failure: usize,
-}
-
-// ---------------------------------------------------------------------------
-// Directory resolution
-// ---------------------------------------------------------------------------
-
-fn latency_log_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join("Programs/omarchy-voice-typing/logs/latency")
-    } else {
-        PathBuf::from("../logs/latency")
-    }
-}
-
-fn session_log_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join("Programs/omarchy-voice-typing/logs/sessions")
-    } else {
-        PathBuf::from("../logs/sessions")
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -493,9 +475,10 @@ pub fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
 
 /// GET /api/profiling/latency — return all latency records filtered by date range.
 pub async fn latency(
+    State(state): State<Arc<AppState>>,
     Query(params): Query<DateRangeQuery>,
 ) -> Result<Json<Vec<LatencyRecord>>, GatewayError> {
-    let dir = latency_log_dir();
+    let dir = &state.latency_log_dir;
     let mut records = read_latency_records(&dir)?;
 
     // Filter by date range
@@ -514,9 +497,10 @@ pub async fn latency(
 
 /// GET /api/profiling/sessions — return parsed session logs.
 pub async fn sessions(
+    State(state): State<Arc<AppState>>,
     Query(params): Query<SessionsQuery>,
 ) -> Result<Json<Vec<SessionSummary>>, GatewayError> {
-    let dir = session_log_dir();
+    let dir = &state.session_log_dir;
     let limit = params.limit.unwrap_or(50);
 
     let entries = match std::fs::read_dir(&dir) {
@@ -565,9 +549,10 @@ pub async fn sessions(
 
 /// GET /api/profiling/summary — aggregate statistics.
 pub async fn summary(
+    State(state): State<Arc<AppState>>,
     Query(params): Query<DateRangeQuery>,
 ) -> Result<Json<ProfilingSummary>, GatewayError> {
-    let dir = latency_log_dir();
+    let dir = &state.latency_log_dir;
     let mut records = read_latency_records(&dir)?;
 
     // Filter by date range

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { SessionSummary } from '../../lib/types';
+import { updateTranscript } from '../../lib/api';
 
 interface TranscriptEditorProps {
   session: SessionSummary;
@@ -19,12 +20,15 @@ export function TranscriptEditor({ session }: TranscriptEditorProps) {
 
   const handleSave = async () => {
     setSaving(true);
-    // Save correction as training data — POST to a future endpoint
-    // For now, this demonstrates the UI pattern
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    setSaving(false);
-    setEditing(false);
-    setSaved(true);
+    try {
+      await updateTranscript(session.filename, text);
+      setEditing(false);
+      setSaved(true);
+    } catch (err) {
+      console.error('Failed to save transcript correction:', err);
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (!session.transcript) {
