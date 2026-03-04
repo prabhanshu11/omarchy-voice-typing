@@ -72,6 +72,7 @@ export interface SessionSummary {
   py_chunks: number;
   gw_bytes: number;
   timeline: TimelineEvent[];
+  wav_filename?: string;
 }
 
 export interface ProfilingSummary {

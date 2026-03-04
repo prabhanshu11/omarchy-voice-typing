@@ -93,8 +93,11 @@ pub const SILENCE_RMS_THRESHOLD: f64 = 100.0;
 ///
 /// Matches Go's `archiveRecording()`: saves to `../recordings/` and `../transcripts/`
 /// relative to the gateway binary's working directory.
-pub fn archive_recording(audio_data: &[u8], transcript: &str, backend: &str) {
-    let timestamp = chrono_timestamp();
+///
+/// If `timestamp_override` is provided, use it instead of generating a new one.
+/// This ensures audio filenames match session log filenames.
+pub fn archive_recording(audio_data: &[u8], transcript: &str, backend: &str, timestamp_override: Option<String>) {
+    let timestamp = timestamp_override.unwrap_or_else(chrono_timestamp);
 
     if !audio_data.is_empty() {
         let dir = Path::new("../recordings");

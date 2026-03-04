@@ -10,12 +10,6 @@ interface SessionDetailProps {
   session: SessionSummary | null;
 }
 
-function deriveAudioFilename(logFilename: string): string {
-  return logFilename
-    .replace(/\.log$/, '')
-    .replace(/_rec-\d+$/, '_audio.wav');
-}
-
 export function SessionDetail({ session }: SessionDetailProps) {
   const [audioError, setAudioError] = useState(false);
 
@@ -36,7 +30,7 @@ export function SessionDetail({ session }: SessionDetailProps) {
     );
   }
 
-  const audioFilename = deriveAudioFilename(session.filename);
+  const audioFilename = session.wav_filename ?? null;
 
   return (
     <div className="session-detail">
@@ -52,8 +46,8 @@ export function SessionDetail({ session }: SessionDetailProps) {
         </div>
       </div>
 
-      {/* Audio player — hides itself if the file doesn't exist */}
-      {!audioError ? (
+      {/* Audio player — only shown when wav_filename is known */}
+      {audioFilename && !audioError ? (
         <div className="audio-section">
           <audio
             controls
@@ -63,7 +57,7 @@ export function SessionDetail({ session }: SessionDetailProps) {
         </div>
       ) : (
         <div className="audio-section audio-unavailable">
-          <span>No audio saved for this session</span>
+          <span>{audioFilename ? 'Audio file not found' : 'No audio linked to this session'}</span>
         </div>
       )}
 

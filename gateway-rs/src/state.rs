@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 use tokio_util::sync::CancellationToken;
 
@@ -20,6 +21,10 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub latency_logger: Arc<LatencyLogger>,
     pub shutdown: CancellationToken,
+    /// Global recording counter for desktop sessions (rec-001, rec-002, ...)
+    pub rec_counter: Arc<AtomicU32>,
+    /// Global recording counter for web sessions (webrec-001, webrec-002, ...)
+    pub webrec_counter: Arc<AtomicU32>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -59,6 +64,8 @@ impl AppState {
                 .expect("failed to build HTTP client"),
             latency_logger: Arc::new(latency_logger),
             shutdown: CancellationToken::new(),
+            rec_counter: Arc::new(AtomicU32::new(0)),
+            webrec_counter: Arc::new(AtomicU32::new(0)),
         })
     }
 }

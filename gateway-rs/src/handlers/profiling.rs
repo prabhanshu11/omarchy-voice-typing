@@ -86,6 +86,8 @@ pub struct SessionSummary {
     pub py_chunks: u32,
     pub gw_bytes: u64,
     pub timeline: Vec<TimelineEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wav_filename: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -252,6 +254,7 @@ pub fn parse_session_log(filename: &str, content: &str) -> Option<SessionSummary
     let mut py_chunks: u32 = 0;
     let mut gw_bytes: u64 = 0;
     let mut timeline = Vec::new();
+    let mut wav_filename: Option<String> = None;
 
     let mut in_timeline = false;
     let mut in_speed = false;
@@ -356,6 +359,11 @@ pub fn parse_session_log(filename: &str, content: &str) -> Option<SessionSummary
         if in_disposition {
             if let Some(val) = line.strip_prefix("Status:") {
                 status = val.trim().to_string();
+            } else if let Some(val) = line.strip_prefix("Archived WAV:") {
+                let v = val.trim();
+                if v != "(none)" {
+                    wav_filename = Some(v.to_string());
+                }
             } else if let Some(val) = line.strip_prefix("Transcript:") {
                 transcript = parse_transcript_value(val.trim());
             }
@@ -407,6 +415,7 @@ pub fn parse_session_log(filename: &str, content: &str) -> Option<SessionSummary
         py_chunks,
         gw_bytes,
         timeline,
+        wav_filename,
     })
 }
 

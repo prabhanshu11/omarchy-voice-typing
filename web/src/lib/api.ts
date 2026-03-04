@@ -5,13 +5,13 @@ const API_BASE = import.meta.env.BASE_URL?.replace(/\/$/, '') ?? '';
 // ── Recording endpoints ──────────────────────────────
 
 export async function fetchLinked(): Promise<LinkedEntry[]> {
-  const res = await fetch(`${API_BASE}/api/linked`);
+  const res = await fetch(`${API_BASE}/api/linked`, { cache: 'no-store' });
   if (!res.ok) throw new Error('Failed to fetch linked entries');
   return res.json();
 }
 
 export async function fetchStats(): Promise<Stats> {
-  const res = await fetch(`${API_BASE}/api/stats`);
+  const res = await fetch(`${API_BASE}/api/stats`, { cache: 'no-store' });
   if (!res.ok) throw new Error('Failed to fetch stats');
   return res.json();
 }
@@ -56,7 +56,7 @@ export async function fetchLatency(from?: string, to?: string): Promise<LatencyR
   if (from) params.set('from', from);
   if (to) params.set('to', to);
   const qs = params.toString();
-  const res = await fetch(`${API_BASE}/api/profiling/latency${qs ? `?${qs}` : ''}`);
+  const res = await fetch(`${API_BASE}/api/profiling/latency${qs ? `?${qs}` : ''}`, { cache: 'no-store' });
   if (!res.ok) throw new Error('Failed to fetch latency data');
   return res.json();
 }
@@ -67,7 +67,7 @@ export async function fetchSessions(from?: string, to?: string, limit?: number):
   if (to) params.set('to', to);
   if (limit) params.set('limit', limit.toString());
   const qs = params.toString();
-  const res = await fetch(`${API_BASE}/api/profiling/sessions${qs ? `?${qs}` : ''}`);
+  const res = await fetch(`${API_BASE}/api/profiling/sessions${qs ? `?${qs}` : ''}`, { cache: 'no-store' });
   if (!res.ok) throw new Error('Failed to fetch sessions');
   return res.json();
 }
@@ -77,7 +77,7 @@ export async function fetchProfilingSummary(from?: string, to?: string): Promise
   if (from) params.set('from', from);
   if (to) params.set('to', to);
   const qs = params.toString();
-  const res = await fetch(`${API_BASE}/api/profiling/summary${qs ? `?${qs}` : ''}`);
+  const res = await fetch(`${API_BASE}/api/profiling/summary${qs ? `?${qs}` : ''}`, { cache: 'no-store' });
   if (!res.ok) throw new Error('Failed to fetch profiling summary');
   return res.json();
 }
