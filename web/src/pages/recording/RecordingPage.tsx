@@ -6,17 +6,47 @@ import './RecordingPage.css';
 type Backend = 'deepgram' | 'assemblyai';
 type RecordMode = 'hold' | 'toggle';
 
+interface AudioDevice {
+  deviceId: string;
+  label: string;
+}
+
 export function RecordingPage() {
   const [backend, setBackend] = useState<Backend>('deepgram');
-  const [recordMode, setRecordMode] = useState<RecordMode>('hold');
+  const [recordMode, setRecordMode] = useState<RecordMode>('toggle');
   const [copied, setCopied] = useState(false);
   const [aaiStatus, setAaiStatus] = useState<'idle' | 'uploading' | 'done' | 'error'>('idle');
   const [aaiTranscript, setAaiTranscript] = useState('');
   const [aaiError, setAaiError] = useState<string | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
+  const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isHoldingRef = useRef(false);
+
+  // Enumerate audio input devices
+  useEffect(() => {
+    async function loadDevices() {
+      try {
+        // Need a brief getUserMedia to get labeled devices (browser requires permission first)
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const inputs = devices
+          .filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default')
+          .map((d) => ({
+            deviceId: d.deviceId,
+            label: d.label || `Microphone ${d.deviceId.slice(0, 8)}`,
+          }));
+        setAudioDevices(inputs);
+      } catch {
+        // Permission denied — will be caught again when recording starts
+      }
+    }
+    loadDevices();
+  }, []);
 
   const session = useRealtimeSession();
 
@@ -29,6 +59,7 @@ export function RecordingPage() {
       },
       [backend, session.sendAudio]
     ),
+    deviceId: selectedDeviceId || undefined,
   });
 
   // Duration timer
@@ -56,10 +87,9 @@ export function RecordingPage() {
     setAaiError(null);
 
     if (backend === 'deepgram') {
-      session.connect();
+      const ready = await session.connect();
+      if (!ready) return; // connect() already set the error state
     }
-    // Small delay for WS to establish before capturing audio
-    await new Promise((r) => setTimeout(r, backend === 'deepgram' ? 300 : 0));
     await audioCapture.start();
   }, [backend, session, audioCapture]);
 
@@ -102,17 +132,24 @@ export function RecordingPage() {
     }
   }, [backend, audioCapture, session]);
 
-  // Hold-to-record handlers
+  // Hold-to-record: use global pointerup so releasing anywhere stops recording
   const handlePointerDown = useCallback(() => {
     if (recordMode !== 'hold') return;
     isHoldingRef.current = true;
     startRecording();
   }, [recordMode, startRecording]);
 
-  const handlePointerUp = useCallback(() => {
-    if (recordMode !== 'hold' || !isHoldingRef.current) return;
-    isHoldingRef.current = false;
-    stopRecording();
+  useEffect(() => {
+    if (recordMode !== 'hold') return;
+
+    const handleGlobalPointerUp = () => {
+      if (!isHoldingRef.current) return;
+      isHoldingRef.current = false;
+      stopRecording();
+    };
+
+    window.addEventListener('pointerup', handleGlobalPointerUp);
+    return () => window.removeEventListener('pointerup', handleGlobalPointerUp);
   }, [recordMode, stopRecording]);
 
   // Toggle mode handler
@@ -197,6 +234,28 @@ export function RecordingPage() {
         </div>
       </div>
 
+      {/* Mic selector */}
+      {audioDevices.length > 1 && (
+        <div className="recording-settings">
+          <div className="setting-group">
+            <label className="setting-label">Mic</label>
+            <select
+              className="mic-select"
+              value={selectedDeviceId}
+              onChange={(e) => setSelectedDeviceId(e.target.value)}
+              disabled={audioCapture.isRecording}
+            >
+              <option value="">System default</option>
+              {audioDevices.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
       {/* Record area */}
       <div className="recording-area">
         <div className="record-button-container">
@@ -206,8 +265,6 @@ export function RecordingPage() {
           <button
             className={`record-button ${audioCapture.isRecording ? 'active' : ''}`}
             onPointerDown={recordMode === 'hold' ? handlePointerDown : undefined}
-            onPointerUp={recordMode === 'hold' ? handlePointerUp : undefined}
-            onPointerLeave={recordMode === 'hold' ? handlePointerUp : undefined}
             onClick={recordMode === 'toggle' ? handleToggleClick : undefined}
             disabled={isProcessing}
           >

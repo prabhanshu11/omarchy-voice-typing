@@ -10,7 +10,8 @@ export type SessionState =
   | 'error';
 
 interface UseRealtimeSessionReturn {
-  connect: () => void;
+  /** Connect and wait for session to be ready. Resolves true if ready, false on error. */
+  connect: () => Promise<boolean>;
   disconnect: () => void;
   sendAudio: (base64Chunk: string) => void;
   commit: () => void;
@@ -36,6 +37,7 @@ export function useRealtimeSession(): UseRealtimeSessionReturn {
 
   const wsRef = useRef<WebSocket | null>(null);
   const stateRef = useRef<SessionState>('idle');
+  const readyResolveRef = useRef<((ready: boolean) => void) | null>(null);
 
   // Keep ref in sync with state
   const setStateTracked = useCallback((s: SessionState) => {
@@ -51,70 +53,97 @@ export function useRealtimeSession(): UseRealtimeSessionReturn {
     setStateTracked('idle');
   }, [setStateTracked]);
 
-  const connect = useCallback(() => {
+  const connect = useCallback((): Promise<boolean> => {
     // Clean up any existing connection
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
+    // Resolve any pending ready promise as failed
+    readyResolveRef.current?.(false);
 
     setError(null);
     setTranscript('');
     setBackend(null);
     setStateTracked('connecting');
 
-    const url = buildWsUrl();
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
+    return new Promise<boolean>((resolve) => {
+      readyResolveRef.current = resolve;
 
-    ws.onopen = () => {
-      // Wait for session.created from server before sending anything
-    };
+      const url = buildWsUrl();
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
 
-    ws.onmessage = (event) => {
-      let msg: { type: string; session?: { model?: string }; transcript?: string };
-      try {
-        msg = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-
-      switch (msg.type) {
-        case 'session.created':
-          // Send session.update to signal readiness
-          ws.send(JSON.stringify({ type: 'session.update', session: {} }));
-          break;
-
-        case 'session.updated':
-          if (msg.session?.model) {
-            setBackend(msg.session.model);
-          }
-          setStateTracked('ready');
-          break;
-
-        case 'conversation.item.input_audio_transcription.completed':
-          setTranscript(msg.transcript ?? '');
-          setStateTracked('done');
-          break;
-      }
-    };
-
-    ws.onerror = () => {
-      setError('WebSocket connection failed');
-      setStateTracked('error');
-    };
-
-    ws.onclose = (event) => {
-      // Use ref to avoid stale closure over state
-      const currentState = stateRef.current;
-      if (currentState !== 'done' && currentState !== 'idle') {
-        if (event.code !== 1000) {
-          setError(`Connection closed (code ${event.code})`);
+      // Timeout: if not ready in 5s, give up
+      const timeout = setTimeout(() => {
+        if (readyResolveRef.current === resolve) {
+          readyResolveRef.current = null;
+          setError('Connection timed out');
           setStateTracked('error');
+          ws.close();
+          resolve(false);
         }
-      }
-      wsRef.current = null;
-    };
+      }, 5000);
+
+      ws.onmessage = (event) => {
+        let msg: { type: string; session?: { model?: string }; transcript?: string };
+        try {
+          msg = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+
+        switch (msg.type) {
+          case 'session.created':
+            ws.send(JSON.stringify({ type: 'session.update', session: {} }));
+            break;
+
+          case 'session.updated':
+            if (msg.session?.model) {
+              setBackend(msg.session.model);
+            }
+            setStateTracked('ready');
+            clearTimeout(timeout);
+            if (readyResolveRef.current === resolve) {
+              readyResolveRef.current = null;
+              resolve(true);
+            }
+            break;
+
+          case 'conversation.item.input_audio_transcription.completed':
+            setTranscript(msg.transcript ?? '');
+            setStateTracked('done');
+            break;
+        }
+      };
+
+      ws.onerror = () => {
+        clearTimeout(timeout);
+        setError('WebSocket connection failed');
+        setStateTracked('error');
+        if (readyResolveRef.current === resolve) {
+          readyResolveRef.current = null;
+          resolve(false);
+        }
+      };
+
+      ws.onclose = (event) => {
+        clearTimeout(timeout);
+        const currentState = stateRef.current;
+        // Only show error if connection closed unexpectedly during active use
+        if (currentState !== 'done' && currentState !== 'idle' && currentState !== 'error') {
+          if (event.code !== 1000) {
+            setError(`Connection closed unexpectedly`);
+            setStateTracked('error');
+          }
+        }
+        wsRef.current = null;
+        if (readyResolveRef.current === resolve) {
+          readyResolveRef.current = null;
+          resolve(false);
+        }
+      };
+    });
   }, [setStateTracked]);
 
   const sendAudio = useCallback((base64Chunk: string) => {

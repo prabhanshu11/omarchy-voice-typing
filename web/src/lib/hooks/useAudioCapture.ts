@@ -1,10 +1,12 @@
 import { useCallback, useRef, useState } from 'react';
 
 interface UseAudioCaptureOptions {
-  /** Called with each base64-encoded PCM16 chunk (~200ms of audio) */
+  /** Called with each base64-encoded PCM16 chunk (~85ms of audio) */
   onChunk: (base64Data: string) => void;
   /** Target sample rate for the gateway (default: 24000) */
   targetSampleRate?: number;
+  /** Specific audio input device ID (from navigator.mediaDevices.enumerateDevices) */
+  deviceId?: string;
 }
 
 interface UseAudioCaptureReturn {
@@ -46,14 +48,16 @@ function downsample(samples: Float32Array, sourceRate: number, targetRate: numbe
   return result;
 }
 
-/** Encode ArrayBuffer to base64 string. */
+/** Fast ArrayBuffer to base64 using chunked String.fromCharCode. */
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  const chunks: string[] = [];
+  // Process in chunks of 8192 to avoid call stack limits on String.fromCharCode
+  for (let i = 0; i < bytes.length; i += 8192) {
+    const slice = bytes.subarray(i, Math.min(i + 8192, bytes.length));
+    chunks.push(String.fromCharCode(...slice));
   }
-  return btoa(binary);
+  return btoa(chunks.join(''));
 }
 
 /** Build a WAV file from PCM16 data at the given sample rate. */
@@ -62,20 +66,17 @@ function buildWav(pcm16Chunks: ArrayBuffer[], sampleRate: number): Blob {
   const header = new ArrayBuffer(44);
   const view = new DataView(header);
 
-  // RIFF header
   writeString(view, 0, 'RIFF');
   view.setUint32(4, 36 + totalBytes, true);
   writeString(view, 8, 'WAVE');
-  // fmt chunk
   writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);        // chunk size
-  view.setUint16(20, 1, true);         // PCM format
-  view.setUint16(22, 1, true);         // mono
-  view.setUint32(24, sampleRate, true); // sample rate
-  view.setUint32(28, sampleRate * 2, true); // byte rate
-  view.setUint16(32, 2, true);         // block align
-  view.setUint16(34, 16, true);        // bits per sample
-  // data chunk
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
   writeString(view, 36, 'data');
   view.setUint32(40, totalBytes, true);
 
@@ -91,6 +92,7 @@ function writeString(view: DataView, offset: number, str: string) {
 export function useAudioCapture({
   onChunk,
   targetSampleRate = TARGET_RATE,
+  deviceId,
 }: UseAudioCaptureOptions): UseAudioCaptureReturn {
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -107,37 +109,49 @@ export function useAudioCapture({
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: 48000,
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
+          ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
         },
       });
       streamRef.current = stream;
 
-      const ctx = new AudioContext({ sampleRate: 48000 });
+      // Let the browser pick its native sample rate — we downsample in software
+      const ctx = new AudioContext();
       contextRef.current = ctx;
+
+      // CRITICAL: Resume the AudioContext — browsers create it suspended
+      // without a prior user gesture on the exact same AudioContext instance.
+      // getUserMedia counts as a gesture, but the context may still need an
+      // explicit resume call.
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
 
       const source = ctx.createMediaStreamSource(stream);
       const processor = ctx.createScriptProcessor(BUFFER_SIZE, 1, 1);
       processorRef.current = processor;
 
+      const nativeSampleRate = ctx.sampleRate;
+
       processor.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
-        const downsampled = downsample(input, ctx.sampleRate, targetSampleRate);
+        const downsampled = downsample(input, nativeSampleRate, targetSampleRate);
         const pcm16 = float32ToInt16(downsampled);
         pcmChunksRef.current.push(pcm16);
         onChunk(arrayBufferToBase64(pcm16));
       };
 
       source.connect(processor);
+      // Connect to destination (required for ScriptProcessorNode to fire)
       processor.connect(ctx.destination);
       setIsRecording(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Microphone access denied';
       setError(msg);
     }
-  }, [onChunk, targetSampleRate]);
+  }, [onChunk, targetSampleRate, deviceId]);
 
   const stop = useCallback(() => {
     processorRef.current?.disconnect();
