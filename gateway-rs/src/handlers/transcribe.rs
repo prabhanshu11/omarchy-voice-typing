@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::Json;
@@ -9,6 +10,7 @@ use axum::http::{Request, header};
 
 use crate::assemblyai::client::{Client as AssemblyAIClient, TranscriptResponse};
 use crate::error::GatewayError;
+use crate::logging::session_log::SessionLog;
 use crate::secrets::load_from_pass;
 use crate::state::AppState;
 
@@ -45,9 +47,17 @@ pub async fn transcribe(
     State(state): State<Arc<AppState>>,
     request: Request<axum::body::Body>,
 ) -> Result<Json<TranscribeResponse>, GatewayError> {
+    // Assign a session ID from the webrec counter (file uploads always come from web).
+    let seq = state.webrec_counter.fetch_add(1, Ordering::SeqCst) + 1;
+    let rec_id = format!("webrec-{seq:03}");
+
+    let mut sl = SessionLog::new(rec_id.clone());
+    sl.add_event("GATEWAY", &format!("{rec_id} started (assemblyai upload)"));
+
     tracing::info!(
         method = %request.method(),
         path = %request.uri().path(),
+        rec_id = %rec_id,
         "Received transcribe request"
     );
 
@@ -63,9 +73,13 @@ pub async fn transcribe(
     let aai = AssemblyAIClient::new(api_key, http);
 
     // Determine the audio source: multipart file upload or JSON audio_url.
-    let audio_url = extract_audio(&aai, request).await?;
+    let (audio_url, audio_bytes) = extract_audio_logged(&aai, request, &mut sl).await?;
 
     if audio_url.is_empty() {
+        sl.status = "FAILED".to_string();
+        sl.add_event("GATEWAY", "no audio file or URL provided");
+        sl.end_time = Some(std::time::SystemTime::now());
+        sl.write_to_file();
         return Err(GatewayError::BadRequest(
             "No audio file or URL provided".to_string(),
         ));
@@ -74,16 +88,31 @@ pub async fn transcribe(
     tracing::info!(audio_url = %audio_url, "Processing transcription");
 
     // Create transcript job.
+    sl.add_event("ASSEMBLYAI", "creating transcript job");
     let transcript_id = aai
         .create_transcript(&audio_url, &state.custom_spelling)
         .await?;
+    sl.add_event("ASSEMBLYAI", &format!("job created: {transcript_id}"));
     tracing::info!(transcript_id = %transcript_id, "Transcript job created");
 
     // Poll for completion.
+    sl.add_event("ASSEMBLYAI", "polling for completion");
     let final_transcript = poll_transcript(&aai, &transcript_id).await?;
 
     let text = final_transcript.text.clone().unwrap_or_default();
     let audio_duration = final_transcript.audio_duration.unwrap_or(0.0);
+
+    sl.add_event(
+        "ASSEMBLYAI",
+        &format!("transcription complete: {} chars", text.len()),
+    );
+    sl.add_event(
+        "GATEWAY",
+        &format!(
+            "commit complete: backend=assemblyai, transcript={} chars",
+            text.len()
+        ),
+    );
 
     tracing::info!(
         transcript_id = %transcript_id,
@@ -93,6 +122,39 @@ pub async fn transcribe(
 
     // Save transcript locally (best-effort, don't fail the request).
     save_transcript(&transcript_id, &text);
+
+    // Finalize session log.
+    sl.end_time = Some(std::time::SystemTime::now());
+    let total_elapsed = sl.start_instant.elapsed();
+    sl.total_ms = total_elapsed.as_millis() as i64;
+    // transcribe_ms = total minus upload time (upload_ms stored in dg_connect_ms slot)
+    if sl.dg_connect_ms >= 0 {
+        sl.transcribe_ms = sl.total_ms - sl.dg_connect_ms;
+    } else {
+        sl.transcribe_ms = sl.total_ms;
+    }
+    sl.gw_bytes = audio_bytes as u64;
+    sl.transcript = text.clone();
+    sl.status = if text.is_empty() { "OK_EMPTY".to_string() } else { "OK".to_string() };
+
+    // Archive WAV with session start timestamp for consistency.
+    let start_secs = sl.start_time
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let (y, m, d, h, min, s) = crate::audio::timestamp_parts(start_secs);
+    let ts = format!("{y:04}{m:02}{d:02}_{h:02}{min:02}{s:02}");
+    sl.wav_path = format!("{ts}_audio.wav");
+
+    sl.write_to_file();
+    sl.write_last_session("assemblyai");
+
+    tracing::info!(
+        rec_id = %rec_id,
+        total_ms = sl.total_ms,
+        transcript_len = text.len(),
+        "Session log written for AssemblyAI transcription"
+    );
 
     Ok(Json(TranscribeResponse {
         text,
@@ -125,14 +187,14 @@ async fn ensure_api_key(state: &AppState) -> Result<String, GatewayError> {
     Ok(key)
 }
 
-/// Extract audio from the incoming request.
+/// Extract audio from the incoming request, logging events to the session log.
 ///
-/// If the request is multipart, reads the `file` field, saves it locally, and
-/// uploads to AssemblyAI. Otherwise, parses JSON body for an `audio_url`.
-async fn extract_audio(
+/// Returns (audio_url, audio_bytes).
+async fn extract_audio_logged(
     aai: &AssemblyAIClient,
     request: Request<axum::body::Body>,
-) -> Result<String, GatewayError> {
+    sl: &mut SessionLog,
+) -> Result<(String, usize), GatewayError> {
     let content_type = request
         .headers()
         .get(header::CONTENT_TYPE)
@@ -141,17 +203,21 @@ async fn extract_audio(
         .to_string();
 
     if content_type.starts_with("multipart/form-data") {
-        extract_from_multipart(aai, request).await
+        extract_from_multipart_logged(aai, request, sl).await
     } else {
-        extract_from_json(request).await
+        let url = extract_from_json(request).await?;
+        Ok((url, 0))
     }
 }
 
-/// Handle multipart form upload: read file bytes, save locally, upload to AssemblyAI.
-async fn extract_from_multipart(
+/// Handle multipart form upload with session logging.
+///
+/// Returns (upload_url, audio_bytes).
+async fn extract_from_multipart_logged(
     aai: &AssemblyAIClient,
     request: Request<axum::body::Body>,
-) -> Result<String, GatewayError> {
+    sl: &mut SessionLog,
+) -> Result<(String, usize), GatewayError> {
     let mut multipart: Multipart =
         Multipart::from_request(request, &())
             .await
@@ -177,9 +243,12 @@ async fn extract_from_multipart(
             .await
             .map_err(|e| GatewayError::BadRequest(format!("failed to read file data: {e}")))?;
 
+        let audio_bytes = audio_data.len();
+        sl.add_event("GATEWAY", &format!("received audio file: {} bytes", audio_bytes));
+
         tracing::info!(
             filename = %filename,
-            size_bytes = audio_data.len(),
+            size_bytes = audio_bytes,
             "Received audio file"
         );
 
@@ -187,12 +256,15 @@ async fn extract_from_multipart(
         save_recording(&filename, &audio_data);
 
         // Upload to AssemblyAI.
+        sl.add_event("ASSEMBLYAI", "uploading audio");
         let upload_url = aai.upload(&audio_data).await?;
-        return Ok(upload_url);
+        // Record upload time in dg_connect_ms slot (repurposed as "upload_ms").
+        sl.dg_connect_ms = sl.start_instant.elapsed().as_millis() as i64;
+        sl.add_event("ASSEMBLYAI", "upload complete");
+        return Ok((upload_url, audio_bytes));
     }
 
-    // No "file" field found in multipart -- caller will check for empty string.
-    Ok(String::new())
+    Ok((String::new(), 0))
 }
 
 /// Handle JSON body with `audio_url` field.
