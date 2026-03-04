@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "voice-type"
 path = "src/main.rs"
 
+[[bin]]
+name = "voice-gateway"
+path = "src/main.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["ws", "multipart"] }
 tokio = { version = "1", features = ["full"] }
