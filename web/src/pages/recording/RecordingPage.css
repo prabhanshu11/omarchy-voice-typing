@@ -72,6 +72,24 @@
   font-weight: 400;
 }
 
+/* Mic selector */
+.mic-select {
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  max-width: 280px;
+  cursor: pointer;
+}
+
+.mic-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Record area */
 .recording-area {
   display: flex;
