@@ -1,17 +1,8 @@
-import { useEffect, useState } from 'react';
 import { Outlet } from 'react-router';
-import type { Stats } from '../../lib/types';
-import { fetchStats } from '../../lib/api';
-import { StatsBar } from './StatsBar';
+import { Nav } from './Nav';
 import './Shell.css';
 
 export function Shell() {
-  const [stats, setStats] = useState<Stats | null>(null);
-
-  useEffect(() => {
-    fetchStats().then(setStats).catch(() => {});
-  }, []);
-
   return (
     <div className="app">
       <header className="app-header">
@@ -20,8 +11,8 @@ export function Shell() {
             <span className="logo-icon">mic</span>
             <h1>voice-type</h1>
           </div>
+          <Nav />
         </div>
-        {stats && <StatsBar stats={stats} />}
       </header>
       <Outlet />
     </div>

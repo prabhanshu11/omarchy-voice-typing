@@ -1,6 +1,6 @@
 import type { LinkedEntry, Stats, LatencyRecord, SessionSummary, ProfilingSummary } from './types';
 
-const API_BASE = '';
+const API_BASE = import.meta.env.BASE_URL?.replace(/\/$/, '') ?? '';
 
 // ── Recording endpoints ──────────────────────────────
 
