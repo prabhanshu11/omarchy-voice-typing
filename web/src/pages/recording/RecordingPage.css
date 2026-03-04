@@ -1,0 +1,315 @@
+.recording-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: calc(100vh - 65px);
+  padding: 2rem 1rem;
+}
+
+/* Settings bar */
+.recording-settings {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 3rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.setting-group {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.setting-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.setting-pills {
+  display: flex;
+  gap: 0.25rem;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  padding: 0.2rem;
+}
+
+.pill {
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 0.4rem 0.8rem;
+  border: none;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.pill:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.pill.active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.pill:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pill-tag {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Record area */
+.recording-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.record-button-container {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.record-ring {
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  border: 2px solid var(--accent-primary);
+  opacity: 0.4;
+  animation: ring-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes ring-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.4; }
+  50% { transform: scale(1.08); opacity: 0.15; }
+}
+
+.record-button {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 4px 24px rgba(124, 93, 250, 0.3);
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+.record-button:hover:not(:disabled) {
+  transform: scale(1.05);
+  box-shadow: 0 6px 32px rgba(124, 93, 250, 0.4);
+}
+
+.record-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.record-button.active {
+  background: linear-gradient(135deg, #e44, #f66);
+  box-shadow: 0 4px 24px rgba(238, 68, 68, 0.4);
+}
+
+.record-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.record-icon {
+  width: 36px;
+  height: 36px;
+}
+
+.record-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* Recording bars animation */
+.recording-bars {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 100%;
+}
+
+.recording-bars span {
+  display: block;
+  width: 4px;
+  border-radius: 2px;
+  background: white;
+  animation: bar-bounce 0.8s ease-in-out infinite;
+}
+
+.recording-bars span:nth-child(1) { height: 40%; animation-delay: 0s; }
+.recording-bars span:nth-child(2) { height: 70%; animation-delay: 0.1s; }
+.recording-bars span:nth-child(3) { height: 100%; animation-delay: 0.2s; }
+.recording-bars span:nth-child(4) { height: 70%; animation-delay: 0.3s; }
+.recording-bars span:nth-child(5) { height: 40%; animation-delay: 0.4s; }
+
+@keyframes bar-bounce {
+  0%, 100% { transform: scaleY(0.5); }
+  50% { transform: scaleY(1); }
+}
+
+/* Status */
+.record-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 1.5rem;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-dot.recording {
+  background: #ef4444;
+  animation: dot-pulse 1s ease-in-out infinite;
+}
+
+.status-dot.processing {
+  background: var(--accent-secondary);
+  animation: dot-pulse 0.6s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.status-text {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.status-text.hint {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.backend-badge {
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  padding: 0.25rem 0.6rem;
+  border-radius: 99px;
+}
+
+/* Transcript output */
+.transcript-output {
+  width: 100%;
+  max-width: 600px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+}
+
+.transcript-result p {
+  font-size: 1.1rem;
+  line-height: 1.7;
+  color: var(--text-primary);
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.transcript-error {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: #f87171;
+  font-size: 0.9rem;
+}
+
+.error-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.copy-button {
+  margin-top: 1rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.copy-button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* Mobile */
+@media (max-width: 600px) {
+  .recording-page {
+    padding: 1.5rem 1rem;
+  }
+
+  .recording-settings {
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+
+  .record-button-container {
+    width: 100px;
+    height: 100px;
+  }
+
+  .record-button {
+    width: 80px;
+    height: 80px;
+  }
+
+  .record-icon {
+    width: 28px;
+    height: 28px;
+  }
+}

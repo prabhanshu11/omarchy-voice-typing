@@ -4,7 +4,7 @@ export function Nav() {
   return (
     <nav className="nav">
       <NavLink to="/" end className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-        Recordings
+        Record
       </NavLink>
       <NavLink to="/profiling" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
         Profiling
