@@ -53,6 +53,7 @@ log() {
 
 log_verbose() {
     [[ "$VERBOSE" == "true" ]] && log "$1"
+    return 0  # under set -e a false [[ ]] here used to abort the whole script
 }
 
 usage() {
