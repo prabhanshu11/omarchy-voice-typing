@@ -25,12 +25,18 @@ hyprwhspr ──ws /v1/realtime──> voice-gateway (laptop :8765)       (proto
                                  └─ local: buffer audio; at commit POST WAV + ?hotwords=<vocab.txt>
                                       1. desktop local-whisper :8767 (Tailscale 100.92.71.80)
                                          fine-tuned large-v3-turbo, CTranslate2 int8_float16, RTX 2060 S
-                                      2. laptop local-whisper :8767 (MX330, distil-large-v3) — slow fallback
+                                         timeout 2.5 s + 0.15 s/audio-s (max 20 s), connect 2 s
+                                      2. unreachable/slow/empty -> Deepgram nova-2 BATCH (automatic)
+                                      3. laptop local-whisper :8767 (MX330, distil-large-v3) — last resort
 voice-labels (laptop :8771) ── corrections.jsonl / vocab.txt ──scp──> desktop labels/ ──> next training round
 ```
 
 Switch back to Deepgram with one command: `voice-stt-provider deepgram` (next
-recording; no restart). `voice-stt-provider local` switches back. `curl -s
+recording; no restart). `voice-stt-provider local` switches back. With `local`, a desktop that is
+unreachable or slow falls back to Deepgram batch automatically (tested
+2026-09-25 on a test gateway: desktop port closed -> Deepgram in 2.4-3.1 s;
+desktop hanging -> Deepgram after the timeout, 5.8-7.4 s total; log line
+`LAN whisper failed or slow, falling back to Deepgram`, backend `deepgram-batch`). `curl -s
 localhost:8765/health` shows `"backend"` = the provider the next recording uses.
 
 ## Data inventory (2026-09-25)

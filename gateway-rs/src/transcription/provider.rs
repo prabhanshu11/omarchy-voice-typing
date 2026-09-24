@@ -5,9 +5,11 @@
 //!   2. env `STT_PROVIDER`
 //!   3. default `deepgram`
 //!
-//! `local` = no Deepgram at all: audio is buffered and sent at commit to the
-//! fine-tuned Whisper on the desktop GPU (LAN_WHISPER_URL), falling back to
-//! the laptop's local-whisper (LOCAL_WHISPER_URL). Switch with the
+//! `local` = no Deepgram streaming: audio is buffered and sent at commit to the
+//! fine-tuned Whisper on the desktop GPU (LAN_WHISPER_URL) with a short timeout
+//! (2.5 s + 0.15 s per audio second). If the desktop is unreachable or slow it
+//! falls back automatically to Deepgram batch (same nova-2 model), then to the
+//! laptop's local-whisper (LOCAL_WHISPER_URL). Switch with the
 //! `voice-stt-provider` script in local-bootstrapping.
 
 use std::path::PathBuf;
