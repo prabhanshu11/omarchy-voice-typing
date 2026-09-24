@@ -75,9 +75,17 @@ def main() -> None:
         if k not in best or score > GOOD.get(best[k].get("backend", ""), 0):
             best[k] = r
 
-    dg_pool = sorted(k for k, r in best.items()
-                     if r.get("backend") == "deepgram" and 3 <= r["dur"] <= 120)
-    test_ids = set(dg_pool[: round(len(dg_pool) * TEST_FRACTION)])
+    # The test set is chosen once and then frozen in data/test_sha1.txt, so
+    # clips added later can never move a trained-on clip into the test set.
+    frozen = DATA / "test_sha1.txt"
+    if frozen.exists():
+        test_ids = set(frozen.read_text().split())
+    else:
+        dg_pool = sorted(k for k, r in best.items()
+                         if r.get("backend") == "deepgram" and 3 <= r["dur"] <= 120)
+        test_ids = set(dg_pool[: round(len(dg_pool) * TEST_FRACTION)])
+        DATA.mkdir(parents=True, exist_ok=True)
+        frozen.write_text("\n".join(sorted(test_ids)) + "\n")
     corrections = load_corrections()
 
     manifest = []
