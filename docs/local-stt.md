@@ -119,8 +119,8 @@ python3 stt/inventory.py --machine laptop > inv-laptop.jsonl     # on the laptop
 python3 code/build_dataset.py
 # 3. cut long clips (GPU, ~10 min)
 $V/bin/python code/segment.py --model models/turbo-base-ct2        # V = local-whisper venv
-# 4. train (GPU etiquette built in; ~1.5 h; refuses if free VRAM < cap + 1.5 GB)
-env/bin/python code/train_lora.py --out runs/rN --epochs 2 --bs 2 --accum 8 --vram-gb 3.5
+# 4. train (star-trek guard built in, see below; exit 3 = paused out -> rerun with --resume)
+python3 code/guard.py wait && env/bin/python code/train_lora.py --out runs/rN --epochs 2 --bs 2 --accum 8 --vram-gb 3.5 --resume
 # 5. merge + convert (CPU)
 env/bin/python code/merge_convert.py --run runs/rN --name ft-rN
 # 6. evaluate, then point `current` at the winner and restart the desktop server
@@ -128,11 +128,21 @@ $V/bin/python code/eval_wer.py --model models/ft-rN --name ft-rN [--hotwords-fil
 ln -sfn ft-rN models/current && systemctl --user restart local-whisper
 ```
 
-GPU etiquette (star-trek-camera is live on the same GPU): train_lora caps its
-own VRAM (checked each micro-batch; `set_per_process_memory_fraction` cannot be
-used because NVML is broken until the desktop reboots into the new driver),
-sleeps 25 % of each step, and backs off further if star-trek's pose latency
-(`/situation` → `sees.measured_pose.latency_s`) rises above 2x its baseline.
+GPU etiquette (star-trek-camera is live on the same GPU). Rules from the camera
+session, 2026-09-25: GPU or heavy-CPU work only while the tracker stays **above
+1.5 cycles/s** (rows/s in `star-trek-camera/data/logs/cycles.jsonl` over 5 min,
+before and during), and `/home` keeps **>= 50 GB free**. `stt/guard.py` measures
+both (`python3 code/guard.py check|wait`); `round.sh` waits on it before every GPU
+step. `train_lora.py` refuses to start (exit 3) unless it passes, re-checks every
+~15 s and pauses while it fails, checkpoints adapter + optimizer + data position
+every 25 steps (atomic; skipped if /home < 50 GB), and after 30 min of pausing
+checkpoints and exits 3 to free its VRAM; `--resume` continues. It also runs at
+nice 19 / ionice idle with 2 CPU threads, sleeps 1.0x each step's time (50 %
+duty), and caps its own VRAM (checked each micro-batch;
+`set_per_process_memory_fraction` cannot be used because NVML is broken until
+the desktop reboots into the new driver). The first round's guard watched
+star-trek's pose latency instead; that did not see the harm (latency stayed
+7-35 ms while the cycle rate fell from 1.75 to 0.4), so it was replaced.
 The desktop's own local-whisper is stopped during training to free ~1 GB.
 
 **How the user's input feeds training**: every correction or "correct as is" in

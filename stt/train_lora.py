@@ -2,22 +2,31 @@
 """LoRA fine-tune of Whisper large-v3-turbo on the user's own voice.
 
 Runs on the desktop GPU (RTX 2060 SUPER, 8 GB) which is SHARED with the live
-star-trek-camera service. Etiquette built in:
+star-trek-camera tracker. Etiquette built in (rules: docs/HANDOVER-local-stt-2026-09-25.md):
+  * star-trek cycle-rate guard (stt/guard.py): refuses to start unless the
+    tracker ran >= 1.5 cycles/s over the last 5 min (rows/s in
+    star-trek-camera/data/logs/cycles.jsonl) and /home has >= 50 GB free;
+    checks again before every step and PAUSES (sleeps, holding its VRAM) while
+    the rate is below 1.5. After --max-pause-min of pausing it checkpoints and
+    exits (code 3) so the VRAM is freed; rerun with --resume to continue.
+    (The old /situation pose-latency guard did not see the harm: pose latency
+    stayed 7-35 ms while the cycle rate fell from 1.75 to 0.4.)
+  * checkpoint (adapter + optimizer + data position) every --save-every
+    steps, written atomically; --resume continues from it.
+  * nice 19 + ionice idle, --threads CPU threads, and a duty cycle: sleeps
+    --idle-frac of each step's time so their kernels get the GPU.
   * VRAM cap for this process (--vram-gb): checked after every micro-batch;
     above it we free the cache and, if still above, stop (we fail, they never
     do). (torch's set_per_process_memory_fraction needs NVML, which is broken
     on the desktop until it reboots into the new NVIDIA driver.)
-  * refuses to start if free VRAM < cap + 1.5 GB headroom;
-  * duty cycle: sleeps --idle-frac of each step's time so their kernels
-    get the GPU; and it watches star-trek's pose latency (localhost:8100
-    /situation) and backs off harder when it rises above 2x its baseline.
+  * refuses to start if free VRAM < cap + 1.5 GB headroom.
 
 Data: data/train_items.jsonl (stt/segment.py) with gold corrections applied.
 Word-list training: with probability --prompt-p an item is trained with a
 <|startofprev|> prompt made of words from the concentrate-on list that occur
 in its text (plus distractors), so the model learns to use hotwords/prompts.
 
-  .venv/bin/python train_lora.py --out ~/Programs/voice-stt/runs/r1
+  env/bin/python code/train_lora.py --out runs/r1 [--resume]
 Then merge_convert.py -> CTranslate2 model for faster-whisper.
 """
 from __future__ import annotations
@@ -27,8 +36,10 @@ import json
 import math
 import os
 import random
+import shutil
+import subprocess
+import sys
 import time
-import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -37,18 +48,12 @@ import torch
 from peft import LoraConfig, get_peft_model
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import guard  # noqa: E402  (stt/guard.py: star-trek cycles/s + /home free)
+
 STT_HOME = Path(os.environ.get("STT_HOME", Path.home() / "Programs/voice-stt"))
 DATA = STT_HOME / "data"
 BASE = "openai/whisper-large-v3-turbo"
-
-
-def star_trek_latency() -> float | None:
-    try:
-        with urllib.request.urlopen("http://127.0.0.1:8100/situation", timeout=2) as r:
-            d = json.load(r)
-        return float(d["sees"]["measured_pose"]["latency_s"])
-    except Exception:
-        return None
 
 
 def load_items(vocab: list[str]):
@@ -128,7 +133,14 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--rank", type=int, default=32)
     ap.add_argument("--vram-gb", type=float, default=3.5)
-    ap.add_argument("--idle-frac", type=float, default=0.25)
+    ap.add_argument("--idle-frac", type=float, default=1.0,
+                    help="sleep this fraction of each step's GPU time (1.0 = 50%% duty)")
+    ap.add_argument("--threads", type=int, default=2, help="torch CPU threads")
+    ap.add_argument("--save-every", type=int, default=25)
+    ap.add_argument("--resume", action="store_true", help="continue from <out>/ckpt")
+    ap.add_argument("--min-rate", type=float, default=guard.MIN_RATE)
+    ap.add_argument("--max-pause-min", type=float, default=30,
+                    help="checkpoint and exit (code 3) after pausing this long")
     ap.add_argument("--prompt-p", type=float, default=0.3)
     ap.add_argument("--vocab", default=str(STT_HOME / "labels/vocab.txt"))
     ap.add_argument("--max-steps", type=int, default=0)
@@ -142,6 +154,15 @@ def main() -> None:
         print(line, flush=True)
         log.write(line + "\n")
         log.flush()
+
+    os.nice(19)
+    subprocess.run(["ionice", "-c", "3", "-p", str(os.getpid())], check=False)
+    torch.set_num_threads(a.threads)
+    ok, msg = guard.status(a.min_rate)
+    say(f"guard at start: {msg}")
+    if not ok:
+        say("star-trek guard says no (cycle rate or /home free space) -- not starting (exit 3)")
+        sys.exit(3)
 
     free, total = torch.cuda.mem_get_info()
     say(f"GPU free {free/1e9:.2f} / {total/1e9:.2f} GB; cap {a.vram_gb} GB")
@@ -183,15 +204,81 @@ def main() -> None:
         opt, lambda s: min(1.0, (s + 1) / warm) * max(0.05, 0.5 * (1 + math.cos(math.pi * s / total_steps))))
     scaler = torch.amp.GradScaler("cuda")
 
-    base_lat = [x for x in (star_trek_latency() for _ in range(5)) if x is not None]
-    base_lat = float(np.median(base_lat)) if base_lat else None
-    say(f"star-trek pose latency baseline: {base_lat}")
-    idle = a.idle_frac
+    ckpt = out / "ckpt"
+    trainable = [n for n, p in model.named_parameters() if p.requires_grad]
 
-    step, i, t_last = 0, 0, time.time()
+    def save_ckpt(step: int, i: int) -> None:
+        if guard.free_gb() < guard.MIN_FREE_GB:
+            say(f"/home free {guard.free_gb():.0f} GB < {guard.MIN_FREE_GB:.0f}: NOT writing a checkpoint")
+            return
+        tmp = out / "ckpt.tmp"
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        tmp.mkdir()
+        sd = dict(model.named_parameters())
+        torch.save({"step": step, "i": i, "order": [it["id"] for it in items],
+                    "trainable": {n: sd[n].detach().cpu() for n in trainable},
+                    "opt": opt.state_dict(), "sched": sched.state_dict(), "scaler": scaler.state_dict(),
+                    "py_rng": random.getstate(), "total_steps": total_steps}, tmp / "state.pt")
+        model.save_pretrained(tmp / "adapter")
+        old = out / "ckpt.old"
+        if old.exists():
+            shutil.rmtree(old)
+        if ckpt.exists():
+            ckpt.rename(old)
+        tmp.rename(ckpt)
+        if old.exists():
+            shutil.rmtree(old)
+        adapter = out / "adapter"  # merge_convert.py reads <run>/adapter
+        if adapter.exists():
+            shutil.rmtree(adapter)
+        shutil.copytree(ckpt / "adapter", adapter)
+        say(f"checkpoint at step {step}")
+
+    step, i = 0, 0
+    if a.resume and (ckpt / "state.pt").exists():
+        st = torch.load(ckpt / "state.pt", map_location="cpu", weights_only=False)
+        by_id = {it["id"]: it for it in items}
+        if set(st["order"]) != set(by_id):
+            raise SystemExit("--resume: the dataset changed since the checkpoint; start a new --out")
+        items[:] = [by_id[k] for k in st["order"]]
+        sd = dict(model.named_parameters())
+        with torch.no_grad():
+            for n, t in st["trainable"].items():
+                sd[n].copy_(t.to(sd[n].device))
+        opt.load_state_dict(st["opt"])
+        sched.load_state_dict(st["sched"])
+        scaler.load_state_dict(st["scaler"])
+        random.setstate(st["py_rng"])
+        step, i = st["step"], st["i"]
+        if st["total_steps"] != total_steps:
+            say(f"note: total_steps {total_steps} differs from checkpoint's {st['total_steps']}")
+        say(f"resumed from checkpoint at step {step}")
+    elif a.resume:
+        say("--resume given but no checkpoint yet: starting from step 0")
+    idle = a.idle_frac
+    t_last = time.time()
+    t_guard = 0.0
+
     model.train()
     losses = []
     while step < total_steps:
+        if time.time() - t_guard > 15:
+            ok, msg = guard.status(a.min_rate)
+            t_guard = time.time()
+            if not ok:
+                say(f"PAUSE at step {step}: {msg}")
+                p0 = time.time()
+                while not ok:
+                    if time.time() - p0 > a.max_pause_min * 60:
+                        save_ckpt(step, i)
+                        say(f"paused > {a.max_pause_min} min: checkpointed, exiting to free VRAM "
+                            "(rerun with --resume)")
+                        sys.exit(3)
+                    time.sleep(30)
+                    ok, msg = guard.status(a.min_rate)
+                say(f"RESUME after {time.time()-p0:.0f} s: {msg}")
+                t_guard = time.time()
         t0 = time.time()
         for _ in range(a.accum):
             if i + a.bs > len(items):
@@ -208,9 +295,8 @@ def main() -> None:
             if torch.cuda.memory_reserved() > cap:
                 torch.cuda.empty_cache()
                 if torch.cuda.memory_reserved() > cap:
-                    model.save_pretrained(out / "adapter")
                     raise SystemExit(f"VRAM {torch.cuda.memory_reserved()/1e9:.2f} GB > cap {a.vram_gb} GB; "
-                                     "stopped (adapter saved) -- lower --bs")
+                                     "stopped (last checkpoint kept) -- lower --bs")
         scaler.unscale_(opt)
         torch.nn.utils.clip_grad_norm_(params, 1.0)
         scaler.step(opt)
@@ -220,19 +306,14 @@ def main() -> None:
         step += 1
         busy = time.time() - t0
         if step % 10 == 0 or step <= 3:
-            lat = star_trek_latency()
-            if base_lat and lat and lat > 2 * max(base_lat, 0.02):
-                idle = min(idle * 1.5, 3.0)
-            elif idle > a.idle_frac:
-                idle = max(a.idle_frac, idle / 1.2)
             say(f"step {step}/{total_steps} loss {np.mean(losses[-10*a.accum:]):.4f} "
                 f"lr {sched.get_last_lr()[0]:.2e} step_s {busy:.1f} idle {idle:.2f} "
-                f"st_lat {lat} peak_alloc {torch.cuda.max_memory_allocated()/1e9:.2f}GB "
+                f"strek {guard.cycle_rate():.2f}/s (1m {guard.cycle_rate(60):.2f}) "
+                f"peak_alloc {torch.cuda.max_memory_allocated()/1e9:.2f}GB "
                 f"reserved {torch.cuda.memory_reserved()/1e9:.2f}GB")
         time.sleep(busy * idle)
-        if step % 200 == 0 or step == total_steps:
-            model.save_pretrained(out / "adapter")
-            say(f"saved adapter at step {step}")
+        if step % a.save_every == 0 or step == total_steps:
+            save_ckpt(step, i)
     (out / "done").write_text(json.dumps({"steps": step, "items": len(items), "vocab": len(vocab),
                                           "elapsed_s": time.time() - t_last}))
     say("done")

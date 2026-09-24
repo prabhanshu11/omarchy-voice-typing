@@ -9,6 +9,10 @@
 # 3. segments long clips, trains a LoRA round, merges + converts it
 # 4. evaluates it against the model currently served, on the same test set
 # 5. promotes it (models/current -> new) ONLY if its WER is not worse
+# Every GPU step waits for the star-trek guard (stt/guard.py: tracker >= 1.5
+# cycles/s over 5 min and /home >= 50 GB free); training pauses itself below
+# that, checkpoints every 25 steps, and after 30 min of pausing exits (code 3)
+# to free the VRAM -- this script then waits and resumes it.
 # The desktop's local-whisper is stopped while training (frees ~1 GB VRAM for
 # the shared GPU; the laptop gateway falls back to its own slow Whisper) and
 # restarted at the end whatever happens.
@@ -62,15 +66,26 @@ trap restart_server EXIT
 systemctl --user stop local-whisper || true
 sleep 2
 
+gate() { python3 "$CODE/guard.py" wait; }
+
 echo "-- 3. segment + train + convert"
+gate
 nice "$V/bin/python" "$CODE/segment.py" --model "$STT/models/turbo-base-ct2"
-nice env/bin/python "$CODE/train_lora.py" --out "runs/$NAME" --epochs 2 --bs 2 --accum 8 --vram-gb 3.5
+until gate && nice env/bin/python "$CODE/train_lora.py" --out "runs/$NAME" --epochs 2 --bs 2 --accum 8 \
+        --vram-gb 3.5 --resume; do
+  rc=$?
+  [[ $rc -eq 3 ]] || { echo "training failed (exit $rc)"; exit $rc; }
+  echo "training paused out (exit 3): waiting for the tracker, then resuming"
+done
+gate
 nice env/bin/python "$CODE/merge_convert.py" --run "runs/$NAME" --name "ft-$NAME"
 
 echo "-- 4. evaluate new vs current (same test set, gold refs where corrected)"
 CUR="$(readlink -f models/current || echo "$STT/models/turbo-base-ct2")"
 HW=(--hotwords-file labels/vocab.txt)
+gate
 nice "$V/bin/python" "$CODE/eval_wer.py" --model "$CUR" --name "current-before-$NAME" "${HW[@]}" | tail -1 > "runs/$NAME/eval-current.json"
+gate
 nice "$V/bin/python" "$CODE/eval_wer.py" --model "models/ft-$NAME" --name "ft-$NAME+hotwords" "${HW[@]}" | tail -1 > "runs/$NAME/eval-new.json"
 old=$(python3 -c "import json;print(json.load(open('runs/$NAME/eval-current.json'))['wer'])")
 new=$(python3 -c "import json;print(json.load(open('runs/$NAME/eval-new.json'))['wer'])")
