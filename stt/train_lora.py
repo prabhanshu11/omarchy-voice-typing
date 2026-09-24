@@ -3,14 +3,16 @@
 
 Runs on the desktop GPU (RTX 2060 SUPER, 8 GB) which is SHARED with the live
 star-trek-camera tracker. Etiquette built in (rules: docs/HANDOVER-local-stt-2026-09-25.md):
-  * star-trek cycle-rate guard (stt/guard.py): refuses to start unless the
-    tracker ran >= 1.5 cycles/s over the last 5 min (rows/s in
-    star-trek-camera/data/logs/cycles.jsonl) and /home has >= 50 GB free;
-    checks again before every step and PAUSES (sleeps, holding its VRAM) while
-    the rate is below 1.5. After --max-pause-min of pausing it checkpoints and
-    exits (code 3) so the VRAM is freed; rerun with --resume to continue.
-    (The old /situation pose-latency guard did not see the harm: pose latency
-    stayed 7-35 ms while the cycle rate fell from 1.75 to 0.4.)
+  * star-trek guard (stt/guard.py; its docstring holds the camera session's rules
+    verbatim): before loading anything it measures a baseline over 10 contiguous
+    clean minutes (load < 8, no other heavy job, tracker running). It runs only
+    while the 5-min tracker rows/s >= 95 % of that baseline, the 5-min p90 of
+    cycle_ms <= 1.2x the baseline p90, device free VRAM >= 3 GB (read with
+    torch.cuda.mem_get_info) and /home >= 50 GB free. Checked every <= 30 s,
+    also between micro-batches and during the duty-cycle sleep, so a breach
+    pauses within 30 s. A VRAM breach that emptying our cache does not fix, or
+    pausing longer than --max-pause-min, checkpoints and exits 3 (frees the
+    VRAM); rerun with --resume (a fresh baseline is taken first).
   * checkpoint (adapter + optimizer + data position) every --save-every
     steps, written atomically; --resume continues from it.
   * nice 19 + ionice idle, --threads CPU threads, and a duty cycle: sleeps
@@ -49,7 +51,7 @@ from peft import LoraConfig, get_peft_model
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import guard  # noqa: E402  (stt/guard.py: star-trek cycles/s + /home free)
+import guard  # noqa: E402  (stt/guard.py: star-trek rules)
 
 STT_HOME = Path(os.environ.get("STT_HOME", Path.home() / "Programs/voice-stt"))
 DATA = STT_HOME / "data"
@@ -128,17 +130,17 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--epochs", type=float, default=2.0)
-    ap.add_argument("--bs", type=int, default=4)
-    ap.add_argument("--accum", type=int, default=4)
+    ap.add_argument("--bs", type=int, default=1)
+    ap.add_argument("--accum", type=int, default=16)
     ap.add_argument("--lr", type=float, default=5e-4)
-    ap.add_argument("--rank", type=int, default=32)
-    ap.add_argument("--vram-gb", type=float, default=3.5)
+    ap.add_argument("--rank", type=int, default=16)
+    ap.add_argument("--vram-gb", type=float, default=2.6,
+                    help="cap on our reserved VRAM; start needs device free >= cap + 3 GB")
     ap.add_argument("--idle-frac", type=float, default=1.0,
                     help="sleep this fraction of each step's GPU time (1.0 = 50%% duty)")
     ap.add_argument("--threads", type=int, default=2, help="torch CPU threads")
     ap.add_argument("--save-every", type=int, default=25)
     ap.add_argument("--resume", action="store_true", help="continue from <out>/ckpt")
-    ap.add_argument("--min-rate", type=float, default=guard.MIN_RATE)
     ap.add_argument("--max-pause-min", type=float, default=30,
                     help="checkpoint and exit (code 3) after pausing this long")
     ap.add_argument("--prompt-p", type=float, default=0.3)
@@ -158,16 +160,18 @@ def main() -> None:
     os.nice(19)
     subprocess.run(["ionice", "-c", "3", "-p", str(os.getpid())], check=False)
     torch.set_num_threads(a.threads)
-    ok, msg = guard.status(a.min_rate)
-    say(f"guard at start: {msg}")
-    if not ok:
-        say("star-trek guard says no (cycle rate or /home free space) -- not starting (exit 3)")
+    if guard.too_early():
+        say("before 10:00 IST on 2026-09-25 -- not starting (exit 3)")
         sys.exit(3)
-
+    g = guard.Guard(say)
+    say("measuring the star-trek baseline (10 clean minutes) before touching the GPU")
+    g.measure_baseline(own={os.getpid()})
     free, total = torch.cuda.mem_get_info()
-    say(f"GPU free {free/1e9:.2f} / {total/1e9:.2f} GB; cap {a.vram_gb} GB")
-    if free / 1e9 < a.vram_gb + 1.5:
-        raise SystemExit("not enough free VRAM for cap + 1.5 GB headroom; GPU busy -- not starting")
+    ok, _, msg = g.check(vram_free=free / 1e9)
+    say(f"guard at start: {msg}; GPU free {free/1e9:.2f} / {total/1e9:.2f} GB; cap {a.vram_gb} GB")
+    if not ok or free / 1e9 < a.vram_gb + guard.MIN_VRAM_GB:
+        say("guard says no (or free VRAM < cap + 3 GB) -- not starting (exit 3)")
+        sys.exit(3)
     cap = a.vram_gb * 1e9
 
     vocab = []
@@ -208,8 +212,8 @@ def main() -> None:
     trainable = [n for n, p in model.named_parameters() if p.requires_grad]
 
     def save_ckpt(step: int, i: int) -> None:
-        if guard.free_gb() < guard.MIN_FREE_GB:
-            say(f"/home free {guard.free_gb():.0f} GB < {guard.MIN_FREE_GB:.0f}: NOT writing a checkpoint")
+        if guard.home_free_gb() < guard.MIN_HOME_GB:
+            say(f"/home free {guard.home_free_gb():.0f} GB < {guard.MIN_HOME_GB:.0f}: NOT writing a checkpoint")
             return
         tmp = out / "ckpt.tmp"
         if tmp.exists():
@@ -258,29 +262,43 @@ def main() -> None:
         say("--resume given but no checkpoint yet: starting from step 0")
     idle = a.idle_frac
     t_last = time.time()
-    t_guard = 0.0
+    t_guard = [0.0]
+
+    def guard_point(step: int, i: int) -> None:
+        """Check the star-trek rules at most every 30 s; pause here while they fail."""
+        if time.time() - t_guard[0] < guard.POLL_S:
+            return
+        t_guard[0] = time.time()
+        ok, vram_ok, msg = g.check(vram_free=torch.cuda.mem_get_info()[0] / 1e9)
+        if ok:
+            return
+        say(f"PAUSE at step {step}: {msg}")
+        p0 = time.time()
+        while not ok:
+            if not vram_ok:
+                torch.cuda.empty_cache()
+                ok, vram_ok, msg = g.check(vram_free=torch.cuda.mem_get_info()[0] / 1e9)
+                if not vram_ok:
+                    save_ckpt(step, i)
+                    say(f"VRAM breach ({msg}): checkpointed, exiting to free VRAM (rerun with --resume)")
+                    sys.exit(3)
+            if time.time() - p0 > a.max_pause_min * 60:
+                save_ckpt(step, i)
+                say(f"paused > {a.max_pause_min} min: checkpointed, exiting to free VRAM (rerun with --resume)")
+                sys.exit(3)
+            time.sleep(guard.POLL_S)
+            ok, vram_ok, msg = g.check(vram_free=torch.cuda.mem_get_info()[0] / 1e9)
+        say(f"RESUME after {time.time()-p0:.0f} s: {msg}")
+        t_guard[0] = time.time()
 
     model.train()
     losses = []
     while step < total_steps:
-        if time.time() - t_guard > 15:
-            ok, msg = guard.status(a.min_rate)
-            t_guard = time.time()
-            if not ok:
-                say(f"PAUSE at step {step}: {msg}")
-                p0 = time.time()
-                while not ok:
-                    if time.time() - p0 > a.max_pause_min * 60:
-                        save_ckpt(step, i)
-                        say(f"paused > {a.max_pause_min} min: checkpointed, exiting to free VRAM "
-                            "(rerun with --resume)")
-                        sys.exit(3)
-                    time.sleep(30)
-                    ok, msg = guard.status(a.min_rate)
-                say(f"RESUME after {time.time()-p0:.0f} s: {msg}")
-                t_guard = time.time()
+        guard_point(step, i)
         t0 = time.time()
+        i_step = i  # data position at the step boundary (what a checkpoint must record)
         for _ in range(a.accum):
+            guard_point(step, i_step)
             if i + a.bs > len(items):
                 random.shuffle(items)
                 i = 0
@@ -308,10 +326,13 @@ def main() -> None:
         if step % 10 == 0 or step <= 3:
             say(f"step {step}/{total_steps} loss {np.mean(losses[-10*a.accum:]):.4f} "
                 f"lr {sched.get_last_lr()[0]:.2e} step_s {busy:.1f} idle {idle:.2f} "
-                f"strek {guard.cycle_rate():.2f}/s (1m {guard.cycle_rate(60):.2f}) "
+                f"strek {guard.cycle_rate():.3f}/s (base {g.base['rate']:.3f}) "
                 f"peak_alloc {torch.cuda.max_memory_allocated()/1e9:.2f}GB "
                 f"reserved {torch.cuda.memory_reserved()/1e9:.2f}GB")
-        time.sleep(busy * idle)
+        t_end = time.time() + busy * idle
+        while time.time() < t_end:  # duty-cycle sleep, guard still watching
+            time.sleep(min(5.0, max(0.0, t_end - time.time())))
+            guard_point(step, i)
         if step % a.save_every == 0 or step == total_steps:
             save_ckpt(step, i)
     (out / "done").write_text(json.dumps({"steps": step, "items": len(items), "vocab": len(vocab),
