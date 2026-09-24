@@ -34,7 +34,12 @@ WorkingDirectory=%h/Programs/omarchy-voice-typing
 
 - **hyprwhspr**: Audio capture daemon (AUR package), controlled via `hyprwhspr-toggle`
 - **voice-gateway**: HTTP gateway (Rust, port 8765) — receives audio, calls AssemblyAI/Deepgram
-- **local-whisper**: Python venv, offline fallback via local Whisper model
+- **local-whisper**: Python venv, offline fallback via local Whisper model. On the desktop
+  it serves the user's fine-tuned large-v3-turbo (`~/Programs/voice-stt/models/current`)
+- **Local STT (2026-09-25)**: `voice-stt-provider local|deepgram` picks the backend per
+  recording (`~/.config/voice-typing/stt-provider`); local = desktop GPU Whisper over
+  Tailscale (LAN_WHISPER_URL) → laptop local-whisper. Training/eval tools in `stt/`,
+  corrections web app `stt/webapp` (voice-labels, :8771). **Read `docs/local-stt.md` first.**
 - **MicOSD**: GTK4 overlay showing recording state (managed by hyprwhspr-patch)
 
 ## Key Files
@@ -45,7 +50,9 @@ WorkingDirectory=%h/Programs/omarchy-voice-typing
 | `.env` | API keys (ASSEMBLYAI_API_KEY, DEEPGRAM_API_KEY) — gitignored |
 | `gateway-rs/` | Rust gateway source |
 | `gateway/` | Legacy Go gateway source |
-| `local-whisper/` | Python offline fallback |
+| `local-whisper/` | Python offline fallback; desktop: fine-tuned model server (`?hotwords=`) |
+| `stt/` | Local STT: inventory, dataset, LoRA training, eval, `round.sh`, `webapp/` |
+| `docs/local-stt.md` | Local STT design, data inventory, WER table, runbook |
 | `logs/` | Runtime logs (gitignored) |
 
 ## Deployment
