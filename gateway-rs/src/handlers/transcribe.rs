@@ -252,8 +252,14 @@ async fn extract_from_multipart_logged(
             "Received audio file"
         );
 
-        // Save locally (best-effort).
-        save_recording(&filename, &audio_data);
+        // Save locally (best-effort) -- unless the upload is already an archived
+        // recording (name starts with YYYYMMDD_HHMMSS_). Re-saving those made
+        // orphan-recovery create ever-longer copies (2026-09-25).
+        if is_archived_name(&filename) {
+            tracing::info!(filename = %filename, "Upload is an archived recording; not saving a copy");
+        } else {
+            save_recording(&filename, &audio_data);
+        }
 
         // Upload to AssemblyAI.
         sl.add_event("ASSEMBLYAI", "uploading audio");
@@ -325,6 +331,16 @@ async fn poll_transcript(
             }
         }
     }
+}
+
+/// True if `name` starts with a gateway archive timestamp `YYYYMMDD_HHMMSS_`.
+fn is_archived_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    b.len() > 16
+        && b[..8].iter().all(u8::is_ascii_digit)
+        && b[8] == b'_'
+        && b[9..15].iter().all(u8::is_ascii_digit)
+        && b[15] == b'_'
 }
 
 /// Save an uploaded audio file to `../recordings/` (best-effort).
@@ -423,4 +439,17 @@ fn timestamp_parts(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
 
 fn is_leap(y: u32) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+#[cfg(test)]
+mod archived_name_tests {
+    use super::is_archived_name;
+
+    #[test]
+    fn detects_archived_names() {
+        assert!(is_archived_name("20260903_221819_audio.wav"));
+        assert!(is_archived_name("20260923_200906_20260903_221819_audio.wav"));
+        assert!(!is_archived_name("audio.wav"));
+        assert!(!is_archived_name("recording_2026.wav"));
+    }
 }
