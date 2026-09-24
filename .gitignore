@@ -28,3 +28,6 @@ gateway/server
 
 # Working notes
 progress_actual.md
+
+# Headless UI test output (contains real transcripts)
+stt/webapp/screenshots/

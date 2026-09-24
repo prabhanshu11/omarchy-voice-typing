@@ -14,6 +14,7 @@ use crate::logging::session_log::SessionLog;
 use crate::spelling::{self, CustomSpelling};
 use crate::state::AppState;
 use crate::transcription::fallback;
+use crate::transcription::provider::{self, Provider};
 
 use super::realtime::RealtimeEvent;
 
@@ -91,6 +92,10 @@ pub struct RealtimeSession {
 
     /// Deepgram unavailable — use local whisper.
     offline_mode: Arc<AtomicBool>,
+
+    /// Provider chosen at the start of the current recording (provider.rs).
+    /// `Local` = never touch Deepgram; buffer and transcribe with Whisper at commit.
+    provider: Provider,
     last_deepgram_try: Instant,
     reconnecting: Arc<AtomicBool>,
 
@@ -131,6 +136,7 @@ impl RealtimeSession {
             finals: Arc::new(std::sync::Mutex::new(Vec::new())),
             session_ready: false,
             offline_mode: Arc::new(AtomicBool::new(false)),
+            provider: provider::current(),
             last_deepgram_try: Instant::now() - DEEPGRAM_RETRY_INTERVAL,
             reconnecting: Arc::new(AtomicBool::new(false)),
             current_rec: None,
@@ -344,7 +350,8 @@ impl RealtimeSession {
         // and Deepgram closes idle connections after ~12s. Connect lazily on first
         // audio chunk in handle_audio_append.
 
-        let backend = if self.is_offline() {
+        self.provider = provider::current();
+        let backend = if self.is_offline() || self.provider == Provider::Local {
             "local-whisper"
         } else {
             "nova-2"
@@ -391,6 +398,9 @@ impl RealtimeSession {
             let prefix = if self.source == "web" { "webrec" } else { "rec" };
             let rec_id = format!("{prefix}-{seq:03}");
             let offline = self.is_offline();
+            // Re-read per recording so `voice-stt-provider` applies without a restart.
+            self.provider = provider::current();
+            tracing::info!(provider = self.provider.as_str(), "STT provider for this recording");
 
             self.current_rec = Some(RecordingLog {
                 id: rec_id.clone(),
@@ -409,7 +419,7 @@ impl RealtimeSession {
             });
 
             let mut sl = SessionLog::new(rec_id.clone());
-            sl.add_event("GATEWAY", &format!("{rec_id} started (offline={offline})"));
+            sl.add_event("GATEWAY", &format!("{rec_id} started (offline={offline}, provider={})", self.provider.as_str()));
             self.current_sess_log = Some(sl);
 
             tracing::info!(rec_id = %rec_id, offline = %offline, "Recording started");
@@ -426,6 +436,11 @@ impl RealtimeSession {
                 sl.first_audio_ms = sl.start_instant.elapsed().as_millis() as i64;
                 sl.add_event("GATEWAY", &format!("first audio chunk: {} bytes", pcm.len()));
             }
+        }
+
+        // Local provider: just accumulate; Whisper transcribes the whole buffer at commit.
+        if self.provider == Provider::Local {
+            return;
         }
 
         // If offline, try async reconnection and accumulate for whisper fallback
@@ -552,7 +567,7 @@ impl RealtimeSession {
         let transcribe_start = Instant::now();
         let (full_transcript, backend);
 
-        if offline || dg_nil {
+        if offline || dg_nil || self.provider == Provider::Local {
             // OFFLINE PATH
             tracing::info!(
                 offline = %offline,
