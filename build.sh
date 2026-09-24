@@ -13,12 +13,13 @@ if [ -f "$REPO_ROOT/gateway-rs/Cargo.toml" ]; then
     echo "[build.sh] Detected Rust gateway"
     cd "$REPO_ROOT/gateway-rs"
     cargo build --release
-    cp target/release/voice-gateway "$REPO_ROOT/bin/voice-gateway"
+    # copy then rename: works while the service is running the old binary ("Text file busy")
+    cp target/release/voice-gateway "$REPO_ROOT/bin/voice-gateway.new" && mv -f "$REPO_ROOT/bin/voice-gateway.new" "$REPO_ROOT/bin/voice-gateway"
 elif [ -f "$REPO_ROOT/gateway/go.mod" ]; then
     echo "[build.sh] Detected Go gateway"
     cd "$REPO_ROOT/gateway"
     go build -o voice-gateway ./cmd/server
-    cp voice-gateway "$REPO_ROOT/bin/voice-gateway"
+    cp voice-gateway "$REPO_ROOT/bin/voice-gateway.new" && mv -f "$REPO_ROOT/bin/voice-gateway.new" "$REPO_ROOT/bin/voice-gateway"
 else
     echo "[build.sh] ERROR: No recognizable gateway found (expected gateway-rs/Cargo.toml or gateway/go.mod)" >&2
     exit 1
