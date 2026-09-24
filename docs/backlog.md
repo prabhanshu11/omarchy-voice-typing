@@ -228,3 +228,22 @@ Change the mic overlay color to indicate which backend is being used (Deepgram v
 - Involves gtk4-layer-shell OSD (LD_PRELOAD quirks, see `local-bootstrapping/docs/mic-osd-lessons.md`)
 - Must work identically on both desktop and laptop
 - Notification/OSD changes historically don't work on first try — budget time for cross-device testing
+
+## Local STT follow-ups (2026-09-25, see docs/local-stt.md)
+
+- **27,131 orphan-recovery copies** in `~/Programs/recordings` (laptop; 88 on the desktop),
+  names like `<ts>_<ts>_..._audio.wav`. The loop is fixed (f6aa387); the copies are
+  duplicates of a handful of clips. Deleting/archiving them is the user's call.
+- **e2e tests fail since c5108d2**: `tests/e2e_test.rs` sends silence, and the gateway now
+  skips silent audio (RMS < 100), so 4 tests get an empty transcript. Tests need real
+  speech-like audio (or a lower threshold under test).
+- **Labels stop flowing once the local provider is live**: new recordings get only the
+  local model's text, which is not a training label. Options: rely on web-app
+  corrections only (free), or a "shadow" Deepgram/AssemblyAI batch call per recording
+  purely for labels (~$0.26/h of speech). Needs the user's choice.
+- **Nightly training round**: `stt/round.sh` does a whole round and only promotes a
+  model that is not worse. A timer is not installed: it uses the GPU shared with
+  star-trek-camera and stops the desktop Whisper for ~1.5 h. Needs the user's yes + a time.
+- **Desktop NVIDIA driver mismatch** (userspace 610.57, kernel module 590.48 since the
+  2026-09-24 upgrade; kernel 7.2.3 installed, 6.18.13 running): new CUDA processes still
+  work, but `nvidia-smi`/NVML fail. A reboot fixes it (the user's call: star-trek is live).
