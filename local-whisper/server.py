@@ -6,11 +6,16 @@ Designed to run on NVIDIA MX330 (2GB VRAM) as a sidecar to the Go voice gateway.
 
 Endpoints:
     POST /transcribe  - Accept WAV body (PCM16/24kHz), return {"text": "...", "duration": ..., "model": "..."}
+                        Optional query: ?hotwords=word1, word2  (faster-whisper hotwords = prompt
+                        biasing towards the user's words-to-concentrate-on list)
     GET  /health      - Return {"status": "ready"|"loading", "model": "..."}
     GET  /switch?model=base - Hot-swap model at runtime
 
 Env vars:
-    WHISPER_MODEL   - Model name (default: distil-large-v3)
+    WHISPER_MODEL   - Model name or a CTranslate2 model directory, e.g. the fine-tuned
+                      ~/Programs/voice-stt/models/current (see docs/local-stt.md)
+    WHISPER_LANGUAGE - Force a language (default: en; empty = auto-detect)
+    WHISPER_DEVICE  - cuda (default) | cpu
     WHISPER_COMPUTE - Compute type (default: int8_float32)
     WHISPER_PORT    - Listen port (default: 8766)
 """
@@ -45,8 +50,19 @@ if _nvidia_paths:
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
 WHISPER_COMPUTE = os.environ.get("WHISPER_COMPUTE", "int8_float32")
 WHISPER_PORT = int(os.environ.get("WHISPER_PORT", "8767"))
+WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "en") or None
+WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
 
-ALLOWED_MODELS = {"distil-large-v3", "base"}
+ALLOWED_MODELS = {"distil-large-v3", "base", "large-v3-turbo"}
+MODELS_DIR = Path.home() / "Programs/voice-stt/models"
+
+
+def model_allowed(name: str) -> bool:
+    """Named models, or a directory under ~/Programs/voice-stt/models."""
+    if name in ALLOWED_MODELS:
+        return True
+    p = Path(name).expanduser().resolve()
+    return p.is_dir() and MODELS_DIR.resolve() in p.parents
 
 # Global model state
 _model = None
@@ -64,7 +80,9 @@ def load_model(model_name: str, compute_type: str) -> None:
     print(f"[whisper] Loading model '{model_name}' (compute={compute_type})...")
     t0 = time.perf_counter()
 
-    new_model = WhisperModel(model_name, device="cuda", compute_type=compute_type)
+    path = Path(model_name).expanduser()
+    new_model = WhisperModel(str(path) if path.is_dir() else model_name,
+                             device=WHISPER_DEVICE, compute_type=compute_type)
 
     elapsed = time.perf_counter() - t0
     print(f"[whisper] Model '{model_name}' loaded in {elapsed:.1f}s")
@@ -75,7 +93,7 @@ def load_model(model_name: str, compute_type: str) -> None:
         _status = "ready"
 
 
-def transcribe_wav(wav_bytes: bytes) -> dict:
+def transcribe_wav(wav_bytes: bytes, hotwords: str | None = None) -> dict:
     """Transcribe WAV audio bytes using the loaded model."""
     with _model_lock:
         if _model is None:
@@ -109,7 +127,19 @@ def transcribe_wav(wav_bytes: bytes) -> dict:
     audio_duration = len(audio) / sample_rate
 
     t0 = time.perf_counter()
-    segments, info = model.transcribe(audio, beam_size=5)
+    # faster-whisper assumes 16 kHz for numpy input; the gateway sends 24 kHz.
+    # (Before 2026-09-25 the 24 kHz array went in as-is: speech ran 1.5x slow.)
+    if sample_rate != 16000:
+        from faster_whisper.audio import decode_audio
+        try:
+            audio = decode_audio(io.BytesIO(wav_bytes), sampling_rate=16000)
+        except Exception:
+            n_out = int(len(audio) * 16000 / sample_rate)
+            audio = np.interp(np.linspace(0, len(audio), n_out, endpoint=False),
+                              np.arange(len(audio)), audio).astype(np.float32)
+    segments, info = model.transcribe(audio, beam_size=5, language=WHISPER_LANGUAGE,
+                                      hotwords=hotwords or None,
+                                      condition_on_previous_text=False)
     text_parts = [seg.text for seg in segments]
     elapsed = time.perf_counter() - t0
 
@@ -121,6 +151,7 @@ def transcribe_wav(wav_bytes: bytes) -> dict:
         "transcribe_time": round(elapsed, 2),
         "model": model_name,
         "language": info.language,
+        "hotwords": bool(hotwords),
     }
 
 
@@ -141,7 +172,7 @@ class WhisperHandler(BaseHTTPRequestHandler):
             if not new_model:
                 self._send_json({"error": "missing ?model= parameter"}, 400)
                 return
-            if new_model not in ALLOWED_MODELS:
+            if not model_allowed(new_model):
                 self._send_json({
                     "error": f"unknown model: {new_model}",
                     "allowed": sorted(ALLOWED_MODELS),
@@ -163,7 +194,8 @@ class WhisperHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "not found"}, 404)
 
     def do_POST(self):
-        if self.path != "/transcribe":
+        parsed = urlparse(self.path)
+        if parsed.path != "/transcribe":
             self._send_json({"error": "not found"}, 404)
             return
 
@@ -177,7 +209,8 @@ class WhisperHandler(BaseHTTPRequestHandler):
             return
 
         wav_data = self.rfile.read(content_length)
-        result = transcribe_wav(wav_data)
+        hotwords = parse_qs(parsed.query).get("hotwords", [None])[0]
+        result = transcribe_wav(wav_data, hotwords)
 
         if "error" in result:
             self._send_json(result, 500)

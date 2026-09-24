@@ -37,7 +37,8 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> 
 
     Json(HealthResponse {
         status: "ok",
-        backend: "deepgram",
+        // Provider the next recording will use (file/env, see transcription/provider.rs)
+        backend: crate::transcription::provider::current().as_str(),
         whisper_ready,
         whisper_url: state.local_whisper_url.clone(),
         lan_whisper_ready,

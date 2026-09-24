@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice labels</title>
+<style>
+  :root {
+    --bg: #14161b; --panel: #1d2027; --panel2: #262a33; --text: #e6e8ee; --dim: #9aa0ad;
+    --accent: #7aa2f7; --good: #73c991; --warn: #e0af68; --bad: #f7768e; --line: #333845;
+    --r: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line);
+    padding: 12px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0 8px 0 0; font-weight: 650; }
+  .pill { font-size: 14px; padding: 4px 10px; border-radius: 999px; background: var(--panel2); color: var(--dim); }
+  .pill b { color: var(--text); font-weight: 600; }
+  nav { display: flex; gap: 8px; margin-left: auto; }
+  button { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 10px; min-height: 48px; padding: 0 18px; cursor: pointer; touch-action: manipulation; }
+  button:active { transform: scale(.97); }
+  button.primary { background: var(--accent); color: #0e1320; border-color: var(--accent); font-weight: 650; }
+  button.on { background: #2f3a55; border-color: var(--accent); }
+  button.ghost { background: transparent; }
+  main { max-width: 980px; margin: 0 auto; padding: 12px 12px 140px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+    padding: 14px; margin: 12px 0; }
+  .meta { display: flex; gap: 10px; align-items: center; color: var(--dim); font-size: 15px; flex-wrap: wrap; }
+  .meta .badge { padding: 2px 8px; border-radius: 6px; background: var(--panel2); }
+  .meta .done { color: var(--good); }
+  .play { min-width: 64px; font-size: 22px; }
+  .words { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 10px; }
+  .w { min-height: 44px; padding: 8px 10px; border-radius: 8px; background: var(--panel2);
+    border: 1px solid transparent; cursor: pointer; user-select: none; touch-action: manipulation; }
+  .w:hover { border-color: var(--line); }
+  .w.fixed { background: #203528; border-color: #2f6b45; color: #bff0cf; }
+  .w.sel { background: #2f3a55; border-color: var(--accent); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .hint { color: var(--dim); font-size: 15px; margin: 4px 2px 0; }
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--panel);
+    border-top: 2px solid var(--accent); padding: 16px; box-shadow: 0 -10px 30px rgba(0,0,0,.5);
+    transform: translateY(110%); transition: transform .18s ease-out; }
+  #sheet.open { transform: none; }
+  #sheet .inner { max-width: 980px; margin: 0 auto; display: grid; gap: 12px; }
+  #sheet .ctx { color: var(--dim); }
+  #sheet .ctx mark { background: #2f3a55; color: var(--text); padding: 2px 4px; border-radius: 4px; }
+  input[type=text], textarea { font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px; width: 100%; min-height: 52px; }
+  textarea { min-height: 140px; }
+  label.chk { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+  label.chk input { width: 26px; height: 26px; }
+  .vocab { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .vchip { display: inline-flex; align-items: center; gap: 4px; background: var(--panel2);
+    border-radius: 10px; padding-left: 12px; min-height: 48px; }
+  .vchip button { min-height: 48px; min-width: 48px; padding: 0; background: transparent; border: 0; color: var(--dim); font-size: 20px; }
+  .toast { position: fixed; top: 70px; left: 50%; transform: translateX(-50%); background: var(--good);
+    color: #0e1a12; padding: 10px 18px; border-radius: 10px; font-weight: 600; opacity: 0; transition: opacity .2s; z-index: 20; }
+  .toast.show { opacity: 1; }
+  .empty { color: var(--dim); text-align: center; padding: 40px 0; }
+  .note { color: var(--dim); font-size: 15px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Voice labels</h1>
+  <span class="pill" id="prov">provider …</span>
+  <span class="pill" id="counts"></span>
+  <nav>
+    <button id="tabRec" class="on">Recordings</button>
+    <button id="tabVocab">Words to concentrate on</button>
+  </nav>
+</header>
+<main>
+  <section id="recView">
+    <p class="hint">Tap a wrong word, type the right one. Use ◀ ▶ to widen the selection when several words are wrong. “Correct as is” marks a transcript as right; both become training labels.</p>
+    <div id="list"></div>
+    <div class="row" style="justify-content:center;margin-top:16px"><button id="more">Load older</button></div>
+  </section>
+  <section id="vocabView" hidden>
+    <div class="card">
+      <div class="row">
+        <input type="text" id="vocabInput" placeholder="Add a word or name, e.g. Omarchy" style="flex:1;min-width:220px">
+        <button class="primary" id="vocabAdd">Add</button>
+      </div>
+      <p class="note">These words are sent to Whisper as <b>hotwords</b> on every recording (a prompt that biases it towards them) and weighted in the next training round.</p>
+      <div class="vocab" id="vocabList"></div>
+    </div>
+  </section>
+</main>
+
+<div id="sheet" role="dialog" aria-modal="true">
+  <div class="inner">
+    <div class="ctx" id="ctx"></div>
+    <div class="row">
+      <button id="growL" title="Include the word before">◀ +</button>
+      <button id="shrink" title="Smaller selection">−</button>
+      <button id="growR" title="Include the word after">+ ▶</button>
+      <button id="playSeg" class="play" title="Play the recording">▶</button>
+    </div>
+    <input type="text" id="fix" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Correct words (empty = delete)">
+    <label class="chk"><input type="checkbox" id="addVocab"> Also add to “words to concentrate on”</label>
+    <div class="row">
+      <button class="primary" id="save" style="flex:1">Save correction</button>
+      <button id="cancel" class="ghost">Cancel</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const state = { recs: [], sel: null, audio: new Audio(), playing: null };
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1400); }
+const words = (s) => s.split(/\s+/).filter(Boolean);
+function esc(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+async function status() {
+  const s = await api("/api/status");
+  $("#prov").innerHTML = `provider <b>${esc(s.provider)}</b>`;
+  $("#counts").innerHTML = `<b>${s.corrections}</b> labelled · <b>${s.vocab}</b> words`;
+}
+
+function fixedSet(rec) {  // word indices changed by saved edits, in the current text
+  const set = new Set();
+  for (const e of rec.edits || []) for (let i = e.start; i < e.start + (e.to_len ?? 0); i++) set.add(i);
+  return set;
+}
+
+function renderRec(rec) {
+  const text = rec.corrected ?? rec.transcript;
+  const fixed = fixedSet(rec);
+  const el = document.createElement("div");
+  el.className = "card"; el.dataset.ts = rec.ts;
+  const status = rec.confirmed ? `<span class="done">✓ confirmed</span>` : rec.corrected ? `<span class="done">✎ corrected</span>` : "";
+  el.innerHTML = `
+    <div class="meta">
+      <button class="play" aria-label="Play">${state.playing === rec.ts ? "❚❚" : "▶"}</button>
+      <span>${esc(rec.when)}</span><span>${rec.secs}s</span>
+      <span class="badge">${esc(rec.backend)}</span>${status}
+    </div>
+    <div class="words">${words(text).map((w, i) => `<span class="w${fixed.has(i) ? " fixed" : ""}" data-i="${i}">${esc(w)}</span>`).join("")}</div>
+    <div class="row">
+      <button class="ok">✓ Correct as is</button>
+      <button class="all">Edit all text</button>
+    </div>
+    <div class="editall" hidden>
+      <textarea>${esc(text)}</textarea>
+      <div class="row" style="margin-top:8px"><button class="primary saveall">Save text</button><button class="ghost cancelall">Cancel</button></div>
+    </div>`;
+  $(".play", el).onclick = () => play(rec);
+  el.querySelectorAll(".w").forEach(w => w.onclick = () => openSheet(rec, +w.dataset.i));
+  $(".ok", el).onclick = () => save(rec, text, [], true);
+  $(".all", el).onclick = () => { $(".editall", el).hidden = false; $("textarea", el).focus(); };
+  $(".cancelall", el).onclick = () => { $(".editall", el).hidden = true; };
+  $(".saveall", el).onclick = () => save(rec, $("textarea", el).value.trim(), [{ kind: "full" }], false);
+  return el;
+}
+
+function redraw(rec) {
+  const old = document.querySelector(`.card[data-ts="${rec.ts}"]`);
+  if (old) old.replaceWith(renderRec(rec));
+}
+
+function play(rec) {
+  const a = state.audio;
+  if (state.playing === rec.ts && !a.paused) { a.pause(); return; }
+  a.src = `/audio/${rec.ts}`; a.play();
+  const prev = state.playing; state.playing = rec.ts;
+  if (prev) { const p = state.recs.find(r => r.ts === prev); if (p) redraw(p); }
+  redraw(rec);
+}
+state.audio.onpause = state.audio.onended = () => {
+  const p = state.recs.find(r => r.ts === state.playing); state.playing = null; if (p) redraw(p);
+};
+
+function openSheet(rec, i) {
+  state.sel = { rec, a: i, b: i };
+  document.querySelectorAll(".w.sel").forEach(x => x.classList.remove("sel"));
+  updateSheet(true);
+  $("#sheet").classList.add("open");
+  setTimeout(() => $("#fix").focus(), 50);
+}
+function updateSheet(resetInput) {
+  const { rec, a, b } = state.sel;
+  const ws = words(rec.corrected ?? rec.transcript);
+  const lo = Math.max(0, a - 6), hi = Math.min(ws.length, b + 7);
+  $("#ctx").innerHTML = (lo > 0 ? "… " : "") + esc(ws.slice(lo, a).join(" ")) +
+    ` <mark>${esc(ws.slice(a, b + 1).join(" "))}</mark> ` + esc(ws.slice(b + 1, hi).join(" ")) + (hi < ws.length ? " …" : "");
+  if (resetInput) { $("#fix").value = ws.slice(a, b + 1).join(" "); $("#addVocab").checked = false; }
+  const card = document.querySelector(`.card[data-ts="${rec.ts}"]`);
+  card?.querySelectorAll(".w").forEach(x => x.classList.toggle("sel", +x.dataset.i >= a && +x.dataset.i <= b));
+}
+function closeSheet() {
+  $("#sheet").classList.remove("open");
+  document.querySelectorAll(".w.sel").forEach(x => x.classList.remove("sel"));
+  state.sel = null;
+}
+$("#growL").onclick = () => { if (state.sel.a > 0) { state.sel.a--; updateSheet(true); } };
+$("#growR").onclick = () => { const n = words(state.sel.rec.corrected ?? state.sel.rec.transcript).length; if (state.sel.b < n - 1) { state.sel.b++; updateSheet(true); } };
+$("#shrink").onclick = () => { if (state.sel.b > state.sel.a) { state.sel.b--; updateSheet(true); } };
+$("#playSeg").onclick = () => play(state.sel.rec);
+$("#cancel").onclick = closeSheet;
+$("#fix").addEventListener("keydown", e => { if (e.key === "Enter") $("#save").click(); if (e.key === "Escape") closeSheet(); });
+$("#save").onclick = async () => {
+  const { rec, a, b } = state.sel;
+  const ws = words(rec.corrected ?? rec.transcript);
+  const from = ws.slice(a, b + 1).join(" ");
+  const to = $("#fix").value.trim();
+  if (to === from) { closeSheet(); return; }
+  const toWords = words(to);
+  const next = [...ws.slice(0, a), ...toWords, ...ws.slice(b + 1)].join(" ");
+  const edits = [...(rec.edits || []), { from, to, start: a, to_len: toWords.length }];
+  if ($("#addVocab").checked && to) await addVocab(to);
+  closeSheet();
+  await save(rec, next, edits, false);
+};
+
+async function save(rec, text, edits, confirmed) {
+  if (!text) { toast("Text is empty"); return; }
+  await api("/api/correction", { ts: rec.ts, text, edits, confirmed });
+  rec.corrected = text; rec.edits = edits; rec.confirmed = confirmed;
+  redraw(rec); toast(confirmed ? "Marked correct" : "Saved"); status();
+}
+
+async function load(before) {
+  const q = new URLSearchParams({ limit: 25 }); if (before) q.set("before", before);
+  const { recordings } = await api(`/api/recordings?${q}`);
+  state.recs.push(...recordings);
+  const list = $("#list");
+  if (!state.recs.length) list.innerHTML = `<div class="empty">No transcribed recordings yet.</div>`;
+  recordings.forEach(r => list.appendChild(renderRec(r)));
+  $("#more").hidden = recordings.length < 25;
+}
+$("#more").onclick = () => load(state.recs.at(-1)?.ts);
+
+async function renderVocab(ws) {
+  const words_ = ws ?? (await api("/api/vocab")).words;
+  $("#vocabList").innerHTML = words_.length ? "" : `<span class="note">No words yet.</span>`;
+  for (const w of words_) {
+    const c = document.createElement("span"); c.className = "vchip";
+    c.innerHTML = `<span>${esc(w)}</span><button aria-label="Remove ${esc(w)}">×</button>`;
+    $("button", c).onclick = async () => { renderVocab((await api("/api/vocab", { remove: w })).words); status(); };
+    $("#vocabList").appendChild(c);
+  }
+}
+async function addVocab(w) { const r = await api("/api/vocab", { add: w }); renderVocab(r.words); status(); toast(`Added “${w}”`); }
+$("#vocabAdd").onclick = () => { const v = $("#vocabInput").value.trim(); if (v) { addVocab(v); $("#vocabInput").value = ""; } };
+$("#vocabInput").addEventListener("keydown", e => { if (e.key === "Enter") $("#vocabAdd").click(); });
+
+function tab(which) {
+  $("#recView").hidden = which !== "rec"; $("#vocabView").hidden = which !== "vocab";
+  $("#tabRec").classList.toggle("on", which === "rec"); $("#tabVocab").classList.toggle("on", which === "vocab");
+  if (which === "vocab") renderVocab();
+  history.replaceState(null, "", which === "vocab" ? "#words" : "#");
+}
+$("#tabRec").onclick = () => tab("rec");
+$("#tabVocab").onclick = () => tab("vocab");
+
+status(); load(); if (location.hash === "#words") tab("vocab");
+</script>
+</body>
+</html>

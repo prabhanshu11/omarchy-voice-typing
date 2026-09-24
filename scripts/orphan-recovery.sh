@@ -96,6 +96,17 @@ init_state() {
         echo '{"last_scan": null, "failed_files": {}}' > "$STATE_FILE"
         [[ "$RESET_FAILURES" == "true" ]] && log "Reset failure tracking"
     fi
+    # A truncated state file (seen 2026-09-25: cut at exactly 2 MiB) makes every
+    # jq call fail, so backoff never applies. Keep the bad copy and start fresh.
+    if ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
+        mv "$STATE_FILE" "$STATE_FILE.corrupt.$(date +%s)"
+        echo '{"last_scan": null, "failed_files": {}}' > "$STATE_FILE"
+        log "State file was not valid JSON; moved aside and reset"
+    fi
+    # Drop entries for re-archived copies (only originals are ever submitted now).
+    local tmp_file="${STATE_FILE}.tmp"
+    jq '.failed_files |= with_entries(select(.key | test("^[0-9]{8}_[0-9]{6}_audio\\.wav$")))' \
+        "$STATE_FILE" > "$tmp_file" && mv "$tmp_file" "$STATE_FILE"
 }
 
 # Log event to datalake (if helper exists)
@@ -294,6 +305,13 @@ submit_recording() {
         text=$(echo "$body" | jq -r '.text // empty')
         if [[ -n "$text" ]]; then
             log "SUCCESS: Recovered transcript (${#text} chars)"
+            # Name the transcript after the ORIGINAL recording so the next scan
+            # matches it (the gateway names its copy with the current time).
+            local rec_ts
+            rec_ts=$(echo "$basename_rec" | grep -oP '^\d{8}_\d{6}' || true)
+            if [[ -n "$rec_ts" ]]; then
+                printf '%s' "$text" > "$TRANSCRIPTS_DIR/${rec_ts}_recovered.txt"
+            fi
             log_event "recovery_success" "$basename_rec"
             clear_failure "$basename_rec"
             LAST_TRANSCRIPT="$text"
@@ -346,6 +364,14 @@ main() {
         [[ -f "$recording" ]] || continue
         local basename_rec
         basename_rec=$(basename "$recording")
+
+        # Only original gateway recordings (YYYYMMDD_HHMMSS_audio.wav). Anything else
+        # is a re-archived copy; resubmitting copies made the gateway save yet another,
+        # longer-named copy each run (27k files, "File name too long", 2026-09-25).
+        if [[ ! "$basename_rec" =~ ^[0-9]{8}_[0-9]{6}_audio\.wav$ ]]; then
+            log_verbose "SKIP (not an original recording): $basename_rec"
+            continue
+        fi
 
         # Skip files still being written (modified < 60s ago)
         local mtime

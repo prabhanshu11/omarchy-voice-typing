@@ -69,8 +69,13 @@ async fn transcribe_whisper(
         .build()
         .map_err(|e| GatewayError::Whisper(format!("[{label}] client build failed: {e}")))?;
 
-    let resp = client
-        .post(&url)
+    // Word list from the corrections web app -> faster-whisper `hotwords`.
+    let mut req = client.post(&url);
+    if let Some(hw) = crate::transcription::provider::hotwords() {
+        tracing::info!(label, hotwords_chars = hw.len(), "Sending hotwords");
+        req = req.query(&[("hotwords", hw)]);
+    }
+    let resp = req
         .header("Content-Type", "audio/wav")
         .body(wav_buf)
         .send()
