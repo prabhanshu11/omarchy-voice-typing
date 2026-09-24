@@ -9,6 +9,12 @@
 # 3. segments long clips, trains a LoRA round, merges + converts it
 # 4. evaluates it against the model currently served, on the same test set
 # 5. promotes it (models/current -> new) ONLY if its WER is not worse
+# Every GPU / heavy-CPU step runs under the star-trek guard (stt/guard.py, rules
+# verbatim in its docstring): a fresh 10-min clean baseline before each step, then
+# the step runs only while the tracker keeps >= 95 % of the baseline rows/s and
+# <= 1.2x its p90 cycle time, >= 3 GB VRAM stays free and /home >= 50 GB. Guarded
+# steps that exit 3 (paused out / VRAM breach) are retried after a new baseline;
+# training checkpoints every 25 steps and resumes.
 # The desktop's local-whisper is stopped while training (frees ~1 GB VRAM for
 # the shared GPU; the laptop gateway falls back to its own slow Whisper) and
 # restarted at the end whatever happens.
@@ -62,16 +68,33 @@ trap restart_server EXIT
 systemctl --user stop local-whisper || true
 sleep 2
 
+G="$CODE/guard.py"
+# guarded CMD...: run under the guard; retry while it exits 3 (paused out)
+guarded() {
+  local need="$1"; shift
+  local rc
+  while true; do
+    rc=0; python3 "$G" run --need-gb "$need" -- "$@" || rc=$?
+    [[ $rc -eq 3 ]] || return $rc
+    echo "guarded step paused out (exit 3): new baseline, then retry" >&2
+  done
+}
+
 echo "-- 3. segment + train + convert"
-nice "$V/bin/python" "$CODE/segment.py" --model "$STT/models/turbo-base-ct2"
-nice env/bin/python "$CODE/train_lora.py" --out "runs/$NAME" --epochs 2 --bs 2 --accum 8 --vram-gb 3.5
-nice env/bin/python "$CODE/merge_convert.py" --run "runs/$NAME" --name "ft-$NAME"
+guarded 1.5 nice "$V/bin/python" "$CODE/segment.py" --model "$STT/models/turbo-base-ct2"
+while true; do  # train_lora.py guards itself (baseline, pause, checkpoint, exit 3)
+  rc=0; nice env/bin/python "$CODE/train_lora.py" --out "runs/$NAME" --epochs 2 --resume || rc=$?
+  [[ $rc -eq 3 ]] || break
+  echo "training paused out (exit 3): resuming after a new baseline"
+done
+[[ $rc -eq 0 ]] || { echo "training failed (exit $rc)"; exit $rc; }
+guarded 0 nice env/bin/python "$CODE/merge_convert.py" --run "runs/$NAME" --name "ft-$NAME"
 
 echo "-- 4. evaluate new vs current (same test set, gold refs where corrected)"
 CUR="$(readlink -f models/current || echo "$STT/models/turbo-base-ct2")"
 HW=(--hotwords-file labels/vocab.txt)
-nice "$V/bin/python" "$CODE/eval_wer.py" --model "$CUR" --name "current-before-$NAME" "${HW[@]}" | tail -1 > "runs/$NAME/eval-current.json"
-nice "$V/bin/python" "$CODE/eval_wer.py" --model "models/ft-$NAME" --name "ft-$NAME+hotwords" "${HW[@]}" | tail -1 > "runs/$NAME/eval-new.json"
+guarded 1.5 nice "$V/bin/python" "$CODE/eval_wer.py" --model "$CUR" --name "current-before-$NAME" "${HW[@]}" | tail -1 > "runs/$NAME/eval-current.json"
+guarded 1.5 nice "$V/bin/python" "$CODE/eval_wer.py" --model "models/ft-$NAME" --name "ft-$NAME+hotwords" "${HW[@]}" | tail -1 > "runs/$NAME/eval-new.json"
 old=$(python3 -c "import json;print(json.load(open('runs/$NAME/eval-current.json'))['wer'])")
 new=$(python3 -c "import json;print(json.load(open('runs/$NAME/eval-new.json'))['wer'])")
 echo "WER current=$old new=$new"

@@ -581,12 +581,22 @@ impl RealtimeSession {
             }
             self.close_deepgram().await;
 
-            let (text, be) = fallback::transcribe_offline(
-                &audio_data,
-                self.lan_whisper_url.as_deref(),
-                &self.local_whisper_url,
-            )
-            .await;
+            let (text, be) = if self.provider == Provider::Local {
+                fallback::transcribe_local_provider(
+                    &audio_data,
+                    self.lan_whisper_url.as_deref(),
+                    &self.local_whisper_url,
+                    self.deepgram_api_key.as_deref(),
+                )
+                .await
+            } else {
+                fallback::transcribe_offline(
+                    &audio_data,
+                    self.lan_whisper_url.as_deref(),
+                    &self.local_whisper_url,
+                )
+                .await
+            };
             full_transcript = text;
             backend = be;
         } else {

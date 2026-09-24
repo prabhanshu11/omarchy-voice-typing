@@ -37,6 +37,16 @@ pub async fn transcribe_lan(
     transcribe_whisper(base_url, audio_data, Duration::from_secs(30), "lan-whisper").await
 }
 
+/// LAN whisper with a caller-chosen timeout (the `local` provider uses a short,
+/// audio-length-scaled one so a slow desktop falls back to Deepgram quickly).
+pub async fn transcribe_lan_timeout(
+    base_url: &str,
+    audio_data: &[u8],
+    timeout: Duration,
+) -> Result<WhisperResponse, GatewayError> {
+    transcribe_whisper(base_url, audio_data, timeout, "lan-whisper").await
+}
+
 async fn transcribe_whisper(
     base_url: &str,
     audio_data: &[u8],
@@ -66,6 +76,7 @@ async fn transcribe_whisper(
 
     let client = reqwest::Client::builder()
         .timeout(timeout)
+        .connect_timeout(Duration::from_secs(2).min(timeout))
         .build()
         .map_err(|e| GatewayError::Whisper(format!("[{label}] client build failed: {e}")))?;
 
