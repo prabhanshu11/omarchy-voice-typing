@@ -172,8 +172,12 @@ effective after 10:00 IST, for training AND GPU serving tests:
   breach), checkpoint (LoRA weights, optimizer, scheduler, data order and
   position) every 25 steps (atomic; skipped if /home < 50 GB), exit 3 after a
   VRAM breach or 30 min paused, `--resume` continues. nice 19, ionice idle,
-  2 CPU threads, 50 % duty. Defaults sized for the 3 GB-free rule: bs 1 x
-  accum 16, LoRA rank 16, VRAM cap 2.6 GB (start needs device free >= cap + 3).
+  2 CPU threads, 50 % duty. Defaults sized for the 3 GB-free rule: the desktop
+  GPU had only 5.1-5.9 GB free with star-trek running (05:00), so the base
+  weights load in 4-bit NF4 (QLoRA, bitsandbytes 0.50.2 installed --no-deps
+  into `env/`), bs 1 x accum 16, LoRA rank 16, VRAM cap 1.9 GB (start needs
+  device free >= cap + 3). `--quant none` = the old fp16 base (r1 reserved 3.3 GB).
+  merge_convert.py merges the adapter into the fp16 base as before.
 
 The first round (04:00, rank 32, bs 2) reserved 3.3 GB and watched star-trek's
 pose latency instead of its cycle rate; pose latency stayed 7-35 ms while the

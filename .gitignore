@@ -31,3 +31,8 @@ progress_actual.md
 
 # Headless UI test output (contains real transcripts)
 stt/webapp/screenshots/
+
+# Forensic process snapshots (contain secrets: API keys, tokens)
+forensics/**/*.core*
+forensics/**/*.wav
+forensics/**/*.bin

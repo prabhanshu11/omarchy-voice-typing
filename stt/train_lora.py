@@ -134,7 +134,9 @@ def main() -> None:
     ap.add_argument("--accum", type=int, default=16)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--rank", type=int, default=16)
-    ap.add_argument("--vram-gb", type=float, default=2.6,
+    ap.add_argument("--quant", choices=["4bit", "8bit", "none"], default="4bit",
+                    help="base weights: 4bit NF4 (QLoRA, ~0.5 GB) so >= 3 GB stays free for star-trek")
+    ap.add_argument("--vram-gb", type=float, default=1.9,
                     help="cap on our reserved VRAM; start needs device free >= cap + 3 GB")
     ap.add_argument("--idle-frac", type=float, default=1.0,
                     help="sleep this fraction of each step's GPU time (1.0 = 50%% duty)")
@@ -185,18 +187,32 @@ def main() -> None:
         f"gold={sum(i['gold'] for i in items)}")
 
     proc = WhisperProcessor.from_pretrained(BASE)
-    model = WhisperForConditionalGeneration.from_pretrained(BASE, torch_dtype=torch.float16)
+    if a.quant == "none":
+        model = WhisperForConditionalGeneration.from_pretrained(BASE, torch_dtype=torch.float16)
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        model.enable_input_require_grads()
+    else:
+        from peft import prepare_model_for_kbit_training
+        from transformers import BitsAndBytesConfig
+        q = (BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
+                                bnb_4bit_compute_dtype=torch.float16)
+             if a.quant == "4bit" else BitsAndBytesConfig(load_in_8bit=True))
+        model = WhisperForConditionalGeneration.from_pretrained(BASE, torch_dtype=torch.float16,
+                                                                quantization_config=q, device_map={"": 0})
+        model = prepare_model_for_kbit_training(
+            model, use_gradient_checkpointing=True, gradient_checkpointing_kwargs={"use_reentrant": False})
     model.config.forced_decoder_ids = None
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    model.enable_input_require_grads()
     cfg = LoraConfig(r=a.rank, lora_alpha=2 * a.rank, lora_dropout=0.05,
                      target_modules=["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"])
     model = get_peft_model(model, cfg)
     for n, p in model.named_parameters():
         if p.requires_grad:
             p.data = p.data.float()
-    model.cuda()
+    if a.quant == "none":
+        model.cuda()
     model.print_trainable_parameters()
+    say(f"base weights {a.quant}; after load: reserved {torch.cuda.memory_reserved()/1e9:.2f} GB, "
+        f"device free {torch.cuda.mem_get_info()[0]/1e9:.2f} GB")
 
     batcher = Batcher(items, proc, vocab, a.prompt_p)
     params = [p for p in model.parameters() if p.requires_grad]

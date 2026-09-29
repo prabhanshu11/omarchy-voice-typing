@@ -98,33 +98,66 @@ pub const SILENCE_RMS_THRESHOLD: f64 = 100.0;
 /// This ensures audio filenames match session log filenames.
 pub fn archive_recording(audio_data: &[u8], transcript: &str, backend: &str, timestamp_override: Option<String>) {
     let timestamp = timestamp_override.unwrap_or_else(chrono_timestamp);
+    save_audio(audio_data, &timestamp);
+    save_transcript(transcript, backend, &timestamp);
+}
 
-    if !audio_data.is_empty() {
-        let dir_str = std::env::var("RECORDINGS_DIR").unwrap_or_else(|_| "../recordings".into());
-        let dir = Path::new(&dir_str);
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            tracing::error!(error = %e, "Failed to create recordings dir");
-        } else {
-            let wav_path = dir.join(format!("{timestamp}_audio.wav"));
-            match write_wav(&wav_path, audio_data, 24000) {
-                Ok(()) => tracing::info!(path = %wav_path.display(), "Saved audio"),
-                Err(e) => tracing::error!(error = %e, "Failed to save WAV"),
-            }
+/// Session timestamp in archive format (`YYYYMMDD_HHMMSS`, UTC) for a start time.
+pub fn archive_timestamp(t: std::time::SystemTime) -> String {
+    let secs = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let (y, m, d, h, min, s) = timestamp_parts(secs);
+    format!("{y:04}{m:02}{d:02}_{h:02}{min:02}{s:02}")
+}
+
+/// Save PCM16 audio as `<recordings>/<timestamp>_audio.wav`. Returns the path on success.
+///
+/// Called BEFORE transcription (2026-09-30): the audio must be on disk whatever
+/// happens to the transcription, the client socket, or this process. A WAV
+/// without a transcript is what orphan-recovery retries.
+pub fn save_audio(audio_data: &[u8], timestamp: &str) -> Option<std::path::PathBuf> {
+    if audio_data.is_empty() {
+        return None;
+    }
+    let dir_str = std::env::var("RECORDINGS_DIR").unwrap_or_else(|_| "../recordings".into());
+    let dir = Path::new(&dir_str);
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        tracing::error!(error = %e, "Failed to create recordings dir");
+        return None;
+    }
+    // Never overwrite an earlier recording that got the same second.
+    let mut wav_path = dir.join(format!("{timestamp}_audio.wav"));
+    let mut n = 2;
+    while wav_path.exists() {
+        wav_path = dir.join(format!("{timestamp}_audio_{n}.wav"));
+        n += 1;
+    }
+    match write_wav(&wav_path, audio_data, 24000) {
+        Ok(()) => {
+            tracing::info!(path = %wav_path.display(), "Saved audio");
+            Some(wav_path)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to save WAV");
+            None
         }
     }
+}
 
-    if !transcript.is_empty() {
-        let dir_str = std::env::var("TRANSCRIPTS_DIR").unwrap_or_else(|_| "../transcripts".into());
-        let dir = Path::new(&dir_str);
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            tracing::error!(error = %e, "Failed to create transcripts dir");
-        } else {
-            let txt_path = dir.join(format!("{timestamp}_{backend}.txt"));
-            match std::fs::write(&txt_path, transcript) {
-                Ok(()) => tracing::info!(path = %txt_path.display(), "Saved transcript"),
-                Err(e) => tracing::error!(error = %e, "Failed to save transcript"),
-            }
-        }
+/// Save a transcript as `<transcripts>/<timestamp>_<backend>.txt` (skipped when empty).
+pub fn save_transcript(transcript: &str, backend: &str, timestamp: &str) {
+    if transcript.is_empty() {
+        return;
+    }
+    let dir_str = std::env::var("TRANSCRIPTS_DIR").unwrap_or_else(|_| "../transcripts".into());
+    let dir = Path::new(&dir_str);
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        tracing::error!(error = %e, "Failed to create transcripts dir");
+        return;
+    }
+    let txt_path = dir.join(format!("{timestamp}_{backend}.txt"));
+    match std::fs::write(&txt_path, transcript) {
+        Ok(()) => tracing::info!(path = %txt_path.display(), "Saved transcript"),
+        Err(e) => tracing::error!(error = %e, "Failed to save transcript"),
     }
 }
 

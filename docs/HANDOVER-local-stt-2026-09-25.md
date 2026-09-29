@@ -90,3 +90,38 @@ Desktop `~/Programs/voice-stt/`: `code/` (copy of repo `stt/`; re-copy with
 venv: shared torch + peft/ctranslate2), `models/turbo-base-ct2`, `data/`, `raw/`, `runs/`,
 `labels/`, `.aai.env` (AssemblyAI key, 0600). Eval/segment use the local-whisper venv with
 `LD_LIBRARY_PATH` set as in `stt/round.sh`. Laptop labels: `~/Programs/voice-stt/labels/`.
+
+## Update 2026-09-25 ~10:15 IST (successor lane) — STOOD DOWN on desktop GPU work
+
+- The main session has stopped all desktop GPU work until the user decides. Start nothing
+  on the desktop GPU without its explicit go.
+- Rules changed after 04:40. The camera session approved a relative bar: a 10-min clean
+  baseline, >= 95 % rows/s, p90 <= 1.2x, >= 3 GB VRAM free, /home >= 50 GB. The rules are
+  verbatim in `stt/guard.py` and `docs/local-stt.md`. The camera session is now
+  **programs-3c** (not b6).
+- Done:
+  - r1 (pid 3357019) was killed with the main session's approval.
+  - Guard: fc631c8, 1ce339b.
+  - Deepgram auto-fallback for provider=local: f22dfac.
+  - build.sh atomic copy: a8030d1.
+  - Merged to master (4caec07). The laptop gateway was rebuilt and restarted; provider is still deepgram.
+  - QLoRA 4-bit default: 9169349 on branch `feature/stt-qlora`, NOT merged, never run on
+    the GPU. bitsandbytes 0.50.2 was installed with --no-deps into the desktop `env/`.
+- 10:00:20 smoke run (pid 444327, `runs/smoke`) died when the user rebooted the desktop
+  (kernel 7.2 / nvidia 610 upgrade; not caused by it). It never got past the baseline wait
+  (load 9.3, datalake refresh running).
+- After the reboot, the desktop's `local-whisper.service` came back up because it is ENABLED
+  at boot. I stopped it (not disabled). Also, `models/current` does not exist yet on the desktop.
+- Desktop LAN IP is now 192.168.0.103 (no reservation). The home uplink was down, so
+  Tailscale was offline.
+- Desktop repo checkout is at d2851ba (not pulled). `~/Programs/voice-stt/code/` has the
+  latest `stt/` files from the qlora branch.
+
+Resume (only after the go):
+1. On the laptop, `git checkout feature/stt-qlora`, then copy the code:
+   `tar cf - -C stt . | ssh desktop 'tar xf - -C ~/Programs/voice-stt/code'`.
+2. Smoke test: `env/bin/python code/train_lora.py --out runs/smoke --max-steps 4 --save-every 2`.
+   Then add `--resume --max-steps 6`. Check the peak VRAM line and that 3 GB stays free.
+3. `code/round.sh --name r1`, or run the steps by hand. Every GPU step is guarded.
+4. Fill the WER table in `docs/local-stt.md`. Serving test (`guard.py run`) while measuring
+   the tracker. `voice-stt-provider local` only after the trained-model WER is reported.

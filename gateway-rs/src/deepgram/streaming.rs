@@ -6,11 +6,21 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::error::GatewayError;
 
 const DEEPGRAM_HOST: &str = "api.deepgram.com";
+
+/// Upper bound for any single write to Deepgram (audio chunk, Finalize,
+/// CloseStream). 2026-09-30: a Deepgram connection went dead without closing;
+/// with no bound the gateway waited 17.5 min for the kernel's TCP timeout,
+/// stopped reading hyprwhspr's socket, and hyprwhspr deadlocked.
+pub const DEEPGRAM_WRITE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Test seam: when set (e.g. `ws://127.0.0.1:PORT/v1/listen`), connect to this
+/// plain-WebSocket URL instead of api.deepgram.com. Only the stall tests use it.
+const STREAM_URL_OVERRIDE_ENV: &str = "DEEPGRAM_STREAM_URL_OVERRIDE";
 
 /// Cached DNS resolution for api.deepgram.com.
 /// Cleared on connection failure so the next attempt re-resolves.
@@ -90,7 +100,7 @@ pub struct Alternative {
 type WsSink = Arc<
     Mutex<
         futures_util::stream::SplitSink<
-            WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>,
+            WebSocketStream<MaybeTlsStream<TcpStream>>,
             Message,
         >,
     >,
@@ -98,7 +108,7 @@ type WsSink = Arc<
 
 /// Read half of the Deepgram WebSocket.
 type WsStream =
-    futures_util::stream::SplitStream<WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>>;
+    futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
 
 /// A streaming connection to Deepgram's Nova-2 API.
 ///
@@ -120,6 +130,25 @@ impl StreamingClient {
         sample_rate: u32,
     ) -> Result<(Self, WsStream), GatewayError> {
         let sample_rate = if sample_rate == 0 { 24000 } else { sample_rate };
+
+        if let Ok(url) = std::env::var(STREAM_URL_OVERRIDE_ENV) {
+            let (ws_stream, _resp) = tokio::time::timeout(
+                Duration::from_secs(3),
+                tokio_tungstenite::connect_async(url.as_str()),
+            )
+            .await
+            .map_err(|_| GatewayError::Deepgram("override connect timeout".into()))?
+            .map_err(|e| GatewayError::Deepgram(format!("override connect failed: {e}")))?;
+            tracing::info!(%url, "Connected to Deepgram override URL (test)");
+            let (sink, stream) = ws_stream.split();
+            return Ok((
+                Self {
+                    sink: Arc::new(Mutex::new(sink)),
+                    closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                },
+                stream,
+            ));
+        }
 
         let addr = resolve_deepgram().await?;
 
@@ -179,7 +208,7 @@ impl StreamingClient {
 
         let (ws_stream, _response) = tokio::time::timeout(
             Duration::from_secs(3),
-            tokio_tungstenite::client_async(request, tls_stream),
+            tokio_tungstenite::client_async(request, MaybeTlsStream::NativeTls(tls_stream)),
         )
         .await
         .map_err(|_| GatewayError::Deepgram("WebSocket handshake timeout".into()))?
@@ -207,10 +236,22 @@ impl StreamingClient {
         if self.is_closed() {
             return Err(GatewayError::Deepgram("connection closed".into()));
         }
-        let mut sink = self.sink.lock().await;
-        sink.send(Message::Binary(pcm16.to_vec().into()))
-            .await
-            .map_err(|e| GatewayError::Deepgram(format!("send audio failed: {e}")))
+        self.send_bounded(Message::Binary(pcm16.to_vec().into()), "send audio").await
+    }
+
+    /// One write to Deepgram, bounded by DEEPGRAM_WRITE_TIMEOUT (lock wait included).
+    async fn send_bounded(&self, msg: Message, what: &str) -> Result<(), GatewayError> {
+        let fut = async {
+            let mut sink = self.sink.lock().await;
+            sink.send(msg).await
+        };
+        match tokio::time::timeout(DEEPGRAM_WRITE_TIMEOUT, fut).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(GatewayError::Deepgram(format!("{what} failed: {e}"))),
+            Err(_) => Err(GatewayError::Deepgram(format!(
+                "{what} timed out after {DEEPGRAM_WRITE_TIMEOUT:?} (Deepgram connection stalled)"
+            ))),
+        }
     }
 
     /// Send Finalize message to flush remaining audio through Deepgram's pipeline.
@@ -219,10 +260,7 @@ impl StreamingClient {
             return Err(GatewayError::Deepgram("connection closed".into()));
         }
         let msg = serde_json::json!({"type": "Finalize"});
-        let mut sink = self.sink.lock().await;
-        sink.send(Message::Text(msg.to_string().into()))
-            .await
-            .map_err(|e| GatewayError::Deepgram(format!("finalize failed: {e}")))
+        self.send_bounded(Message::Text(msg.to_string().into()), "finalize").await
     }
 
     /// Send CloseStream and close the WebSocket connection.
@@ -233,11 +271,17 @@ impl StreamingClient {
         {
             return; // already closed
         }
-        let mut sink = self.sink.lock().await;
-        // Best-effort CloseStream message
-        let msg = serde_json::json!({"type": "CloseStream"});
-        let _ = sink.send(Message::Text(msg.to_string().into())).await;
-        let _ = sink.close().await;
+        // Best-effort CloseStream + close, bounded: a dead connection must not
+        // hold the recording (and the hyprwhspr socket) hostage.
+        let fut = async {
+            let mut sink = self.sink.lock().await;
+            let msg = serde_json::json!({"type": "CloseStream"});
+            let _ = sink.send(Message::Text(msg.to_string().into())).await;
+            let _ = sink.close().await;
+        };
+        if tokio::time::timeout(DEEPGRAM_WRITE_TIMEOUT, fut).await.is_err() {
+            tracing::warn!("Deepgram CloseStream/close timed out (connection stalled)");
+        }
     }
 
     pub fn is_closed(&self) -> bool {

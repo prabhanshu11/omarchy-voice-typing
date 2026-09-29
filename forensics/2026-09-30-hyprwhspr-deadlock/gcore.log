@@ -1,0 +1,26 @@
+[New LWP 1786329]
+[New LWP 1694896]
+[New LWP 1673023]
+[New LWP 1672981]
+[New LWP 1672980]
+[New LWP 1672973]
+[New LWP 1672963]
+[New LWP 1442845]
+[New LWP 1442805]
+[New LWP 1442802]
+[New LWP 1442595]
+[New LWP 1442593]
+[New LWP 1442589]
+[New LWP 1442584]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/usr/lib/libthread_db.so.1".
+0x00007eff946a0a52 in ?? () from /usr/lib/libc.so.6
+warning: Memory read failed for corefile section, 1048576 bytes at 0x7eff49ffc000.
+warning: Memory read failed for corefile section, 1048576 bytes at 0x7eff577ed000.
+warning: Memory read failed for corefile section, 1048576 bytes at 0x7eff6c7f9000.
+warning: Memory read failed for corefile section, 1048576 bytes at 0x7eff75bff000.
+warning: Memory read failed for corefile section, 1048576 bytes at 0x7eff8affe000.
+warning: Memory read failed for corefile section, 1048576 bytes at 0x7eff904fc000.
+warning: Memory read failed for corefile section, 4096 bytes at 0xffffffffff600000.
+Saved corefile /home/prabhanshu/Programs/omarchy-voice-typing/forensics/2026-09-30-hyprwhspr-deadlock/hyprwhspr.1442246
+[Inferior 1 (process 1442246) detached]
