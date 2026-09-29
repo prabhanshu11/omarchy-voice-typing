@@ -1,0 +1,14 @@
+{
+ "core": "forensics/2026-09-30-hyprwhspr-deadlock/hyprwhspr.1442246.core",
+ "created": "2026-09-30T02:46:37.345291",
+ "results": [
+  {
+   "list": "0x7eff74a9f680",
+   "chunks": 660,
+   "bad": 0,
+   "seconds": 42.2,
+   "rms": 0.1192,
+   "wav": "forensics/2026-09-30-hyprwhspr-deadlock/recovered_list0_660chunks.wav"
+  }
+ ]
+}
