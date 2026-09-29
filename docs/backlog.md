@@ -247,3 +247,15 @@ Change the mic overlay color to indicate which backend is being used (Deepgram v
 - **Desktop NVIDIA driver mismatch** (userspace 610.57, kernel module 590.48 since the
   2026-09-24 upgrade; kernel 7.2.3 installed, 6.18.13 running): new CUDA processes still
   work, but `nvidia-smi`/NVML fail. A reboot fixes it (the user's call: star-trek is live).
+
+## Voice data-loss follow-ups (2026-09-30, see docs/issues/2026-09-30-voice-data-loss.md)
+
+- **Deploy to the desktop**: omarchy-voice-typing master (ahead of origin) and local-bootstrapping
+  `a6eaec5`/`2caac5a` are committed locally only. Pushing local-bootstrapping triggers sync-from-master
+  plus setup-voice-typing on every machine, which restarts the voice services. Needs the user's go.
+- **Archive (not delete)** `logs/orphan-recovery.log` (692 MB, 99.9 % cascade noise) and the 27,131
+  orphan-recovery copies in `~/Programs/recordings`. His call.
+- **Late-transcript race** (upstream realtime_client): a transcript that arrives after the 30 s timeout
+  could be taken as the next recording's text if it lands after the next commit's `response_event.clear()`.
+- **Asynchronous commit in the gateway**: commits still run inline in the WebSocket loop (bounded to about 20 s).
+- The desktop gateway dropped 11 real dictations (2–42 s) on disconnect between Feb and Mar 2026. They cannot be recovered.
