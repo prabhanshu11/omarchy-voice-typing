@@ -54,6 +54,12 @@ WorkingDirectory=%h/Programs/omarchy-voice-typing
 | `stt/` | Local STT: inventory, dataset, LoRA training, eval, `round.sh`, `webapp/` |
 | `docs/local-stt.md` | Local STT design, data inventory, WER table, runbook |
 | `logs/` | Runtime logs (gitignored) |
+| `scripts/voice-retranscribe` | Re-transcribe any saved WAV (Deepgram batch); `--pending` retries failed client spool files |
+| `~/Programs/recordings/client/` | hyprwhspr-side spool: every recording written to disk while recording (voice_safety.py in the local-bootstrapping hyprwhspr-patch) |
+
+**No audio may exist only in memory** (2026-09-30 incident, `docs/issues/2026-09-30-voice-data-loss.md`):
+the client spools while recording, the gateway saves the WAV before transcribing and on disconnect,
+and every network wait is bounded. Keep it that way.
 
 ## Deployment
 
