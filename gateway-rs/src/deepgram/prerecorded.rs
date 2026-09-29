@@ -20,8 +20,12 @@ pub async fn transcribe(api_key: &str, audio_data: &[u8], timeout: Duration) -> 
         .build()
         .map_err(|e| GatewayError::Deepgram(format!("[deepgram-batch] client build failed: {e}")))?;
     let t0 = Instant::now();
+    // Test seam (stall tests): DEEPGRAM_BATCH_URL_OVERRIDE replaces the endpoint.
+    let url = std::env::var("DEEPGRAM_BATCH_URL_OVERRIDE").unwrap_or_else(|_| {
+        "https://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&smart_format=true".to_string()
+    });
     let resp = client
-        .post("https://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&smart_format=true")
+        .post(url)
         .header("Authorization", format!("Token {api_key}"))
         .header("Content-Type", "audio/wav")
         .body(wav)

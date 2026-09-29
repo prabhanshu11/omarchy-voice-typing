@@ -8,6 +8,7 @@ use futures_util::SinkExt;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::audio;
+use crate::deepgram::prerecorded;
 use crate::deepgram::streaming::StreamingClient;
 use crate::logging::latency::{LatencyLogger, LatencyMetrics};
 use crate::logging::session_log::SessionLog;
@@ -19,6 +20,18 @@ use crate::transcription::provider::{self, Provider};
 use super::realtime::RealtimeEvent;
 
 const DEEPGRAM_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How long to wait for the Deepgram read loop to finish after CloseStream.
+/// A healthy stream closes in well under a second. 2026-09-30 the wait was
+/// unbounded and lasted 1050 s (kernel TCP timeout) while hyprwhspr deadlocked.
+const READ_LOOP_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Budget for re-transcribing a whole recording in one Deepgram batch call when
+/// the stream failed. Keeps a commit well inside hyprwhspr's 30 s wait.
+const BATCH_RESCUE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Upper bound for one write to the hyprwhspr client.
+const CLIENT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Per-recording structured log (single summary line).
 struct RecordingLog {
@@ -80,6 +93,17 @@ pub struct RealtimeSession {
     /// Signal from the Deepgram read loop that it has exited.
     read_done: Option<tokio::sync::oneshot::Receiver<()>>,
 
+    /// The Deepgram read-loop task, so a stalled one can be aborted.
+    read_task: Option<tokio::task::JoinHandle<()>>,
+
+    /// A Deepgram stream was opened during the current recording.
+    dg_used_this_rec: bool,
+
+    /// The Deepgram stream failed during the current recording (send error or
+    /// it died). Its finals are incomplete: the whole buffer is batch-transcribed
+    /// at commit instead of reconnecting mid-recording (which cleared finals).
+    dg_broken: bool,
+
     /// Accumulated raw PCM16 audio bytes.
     audio_buffer: Vec<u8>,
 
@@ -132,6 +156,9 @@ impl RealtimeSession {
             spellings: state.custom_spelling.clone(),
             deepgram_client: Arc::new(TokioMutex::new(None)),
             read_done: None,
+            read_task: None,
+            dg_used_this_rec: false,
+            dg_broken: false,
             audio_buffer: Vec::new(),
             finals: Arc::new(std::sync::Mutex::new(Vec::new())),
             session_ready: false,
@@ -151,10 +178,22 @@ impl RealtimeSession {
     /// Send a JSON value to the client over the WebSocket.
     pub async fn send_json(&self, value: &serde_json::Value) -> Result<(), String> {
         let text = serde_json::to_string(value).map_err(|e| e.to_string())?;
-        let mut sink = self.client_sink.lock().await;
-        sink.send(Message::Text(text.into()))
-            .await
-            .map_err(|e| format!("send to client failed: {e}"))
+        let fut = async {
+            let mut sink = self.client_sink.lock().await;
+            sink.send(Message::Text(text.into())).await
+        };
+        match tokio::time::timeout(CLIENT_SEND_TIMEOUT, fut).await {
+            Ok(r) => r.map_err(|e| format!("send to client failed: {e}")),
+            Err(_) => Err(format!("send to client timed out after {CLIENT_SEND_TIMEOUT:?}")),
+        }
+    }
+
+    /// Archive timestamp of the current recording (session start), or now.
+    fn rec_timestamp(&self) -> String {
+        match &self.current_sess_log {
+            Some(sl) => audio::archive_timestamp(sl.start_time),
+            None => audio::archive_timestamp(std::time::SystemTime::now()),
+        }
     }
 
     async fn send_to_client(&self, value: &serde_json::Value) {
@@ -230,7 +269,7 @@ impl RealtimeSession {
                 let finals_clone = Arc::clone(&self.finals);
                 let dg_client_clone = Arc::clone(&self.deepgram_client);
 
-                tokio::spawn(async move {
+                self.read_task = Some(tokio::spawn(async move {
                     crate::deepgram::streaming::read_loop(
                         read_stream,
                         |text| {
@@ -253,7 +292,7 @@ impl RealtimeSession {
                     tracing::debug!("Deepgram read loop exited, client set to None");
 
                     let _ = done_tx.send(());
-                });
+                }));
 
                 Ok(())
             }
@@ -312,19 +351,67 @@ impl RealtimeSession {
         });
     }
 
-    /// Cleanly shut down the current Deepgram connection.
-    async fn close_deepgram(&mut self) {
+    /// Shut down the current Deepgram connection, bounded in time.
+    ///
+    /// Returns false when the stream did not close cleanly (its read loop had to
+    /// be aborted), i.e. it may have stalled and its finals may be incomplete.
+    async fn close_deepgram(&mut self) -> bool {
+        let client = {
+            let mut dg = self.deepgram_client.lock().await;
+            dg.take()
+        };
+        let mut clean = true;
+        if let Some(client) = client {
+            client.close().await; // bounded inside
+            if let Some(done_rx) = self.read_done.take() {
+                if tokio::time::timeout(READ_LOOP_EXIT_TIMEOUT, done_rx).await.is_err() {
+                    clean = false;
+                    tracing::warn!(
+                        timeout = ?READ_LOOP_EXIT_TIMEOUT,
+                        "Deepgram read loop did not exit after CloseStream — aborting it (stalled connection)"
+                    );
+                    if let Some(sl) = &mut self.current_sess_log {
+                        sl.add_event("DEEPGRAM", "stream stalled on close — read loop aborted");
+                    }
+                    if let Some(task) = self.read_task.take() {
+                        task.abort();
+                    }
+                }
+            }
+        }
+        self.read_task = None;
+        clean
+    }
+
+    /// Drop a failed Deepgram stream without waiting on it.
+    async fn abandon_deepgram(&mut self) {
         let client = {
             let mut dg = self.deepgram_client.lock().await;
             dg.take()
         };
         if let Some(client) = client {
-            client.close().await;
-            // Wait for read loop to exit
-            if let Some(done_rx) = self.read_done.take() {
-                let _ = done_rx.await;
+            tokio::spawn(async move { client.close().await });
+        }
+        if let Some(task) = self.read_task.take() {
+            task.abort();
+        }
+        self.read_done = None;
+    }
+
+    /// Transcribe the whole recording in one Deepgram batch call (the stream
+    /// failed). Falls back to offline Whisper when there is no key or it fails.
+    async fn rescue_batch(&mut self, audio_data: &[u8], why: &str) -> (String, String) {
+        tracing::warn!(why, "Re-transcribing the full recording with one Deepgram batch call");
+        if let Some(sl) = &mut self.current_sess_log {
+            sl.add_event("GATEWAY", &format!("batch rescue: {why}"));
+        }
+        if let Some(key) = self.deepgram_api_key.clone() {
+            match prerecorded::transcribe(&key, audio_data, BATCH_RESCUE_TIMEOUT).await {
+                Ok(text) => return (text, "deepgram-batch-rescue".to_string()),
+                Err(e) => tracing::warn!(error = %e, "Batch rescue failed"),
             }
         }
+        (String::new(), "none".to_string())
     }
 
     // ──────────────────────────────────────────────
@@ -394,6 +481,8 @@ impl RealtimeSession {
 
         // Start new recording log on first chunk
         if was_empty {
+            self.dg_used_this_rec = false;
+            self.dg_broken = false;
             let seq = self.rec_counter.fetch_add(1, Ordering::SeqCst) + 1;
             let prefix = if self.source == "web" { "webrec" } else { "rec" };
             let rec_id = format!("{prefix}-{seq:03}");
@@ -463,19 +552,45 @@ impl RealtimeSession {
             dg.is_none()
         };
         if needs_connect {
+            if self.dg_used_this_rec {
+                // The stream died mid-recording. Reconnecting would clear the finals
+                // collected so far; keep buffering and batch the whole thing at commit.
+                if !self.dg_broken {
+                    tracing::warn!("Deepgram stream ended mid-recording; will batch-transcribe the full recording at commit");
+                    if let Some(sl) = &mut self.current_sess_log {
+                        sl.add_event("DEEPGRAM", "stream ended mid-recording");
+                    }
+                    self.dg_broken = true;
+                }
+                return;
+            }
             tracing::info!("Connecting to Deepgram for new utterance");
             if let Err(e) = self.connect_deepgram().await {
                 tracing::warn!(error = %e, "Failed to connect to Deepgram (will use offline fallback at commit)");
                 return;
             }
+            self.dg_used_this_rec = true;
         }
 
-        // Forward audio to Deepgram
-        let dg = self.deepgram_client.lock().await;
-        if let Some(client) = dg.as_ref() {
-            if let Err(e) = client.send_audio(&pcm).await {
-                tracing::warn!(error = %e, "Failed to send audio to Deepgram");
+        if self.dg_broken {
+            return;
+        }
+
+        // Forward audio to Deepgram (bounded write)
+        let send_err = {
+            let dg = self.deepgram_client.lock().await;
+            match dg.as_ref() {
+                Some(client) => client.send_audio(&pcm).await.err(),
+                None => None,
             }
+        };
+        if let Some(e) = send_err {
+            tracing::warn!(error = %e, "Failed to send audio to Deepgram; will batch-transcribe the full recording at commit");
+            if let Some(sl) = &mut self.current_sess_log {
+                sl.add_event("DEEPGRAM", &format!("send failed: {e}"));
+            }
+            self.dg_broken = true;
+            self.abandon_deepgram().await;
         }
     }
 
@@ -553,8 +668,9 @@ impl RealtimeSession {
 
             // Archive the silent audio for debugging
             let audio_for_archive = audio_data;
+            let ts = self.rec_timestamp();
             tokio::task::spawn_blocking(move || {
-                audio::archive_recording(&audio_for_archive, "", &"silence-detected", None);
+                audio::save_audio(&audio_for_archive, &ts);
             });
 
             self.audio_buffer.clear();
@@ -564,10 +680,47 @@ impl RealtimeSession {
 
         tracing::info!(rms = format_args!("{:.1}", audio_rms), "Audio level OK");
 
+        // Save the audio BEFORE transcribing (2026-09-30): whatever happens next
+        // (Deepgram stall, client gone, gateway killed) the recording is on disk,
+        // and a WAV without a transcript is what orphan-recovery retries.
+        let archive_timestamp = Some(self.rec_timestamp());
+        let (audio_data, saved_path) = {
+            let ts = archive_timestamp.clone().unwrap_or_default();
+            match tokio::task::spawn_blocking(move || {
+                let p = audio::save_audio(&audio_data, &ts);
+                (audio_data, p)
+            })
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(error = %e, "save_audio task failed");
+                    (self.audio_buffer.clone(), None)
+                }
+            }
+        };
+        if let Some(sl) = &mut self.current_sess_log {
+            match &saved_path {
+                Some(p) => {
+                    sl.add_event("GATEWAY", &format!("audio saved before transcription: {}", p.display()));
+                    if let Some(name) = p.file_name() {
+                        sl.wav_path = name.to_string_lossy().to_string();
+                    }
+                }
+                None => sl.add_event("GATEWAY", "WARNING: could not save audio before transcription"),
+            }
+        }
+
         let transcribe_start = Instant::now();
         let (full_transcript, backend);
 
-        if offline || dg_nil || self.provider == Provider::Local {
+        if dg_nil && self.dg_broken && !offline && self.provider != Provider::Local {
+            // Stream failed mid-recording: one batch call over the full buffer.
+            self.close_deepgram().await;
+            let (text, be) = self.rescue_batch(&audio_data, "stream failed mid-recording").await;
+            full_transcript = text;
+            backend = be;
+        } else if offline || dg_nil || self.provider == Provider::Local {
             // OFFLINE PATH
             tracing::info!(
                 offline = %offline,
@@ -605,7 +758,7 @@ impl RealtimeSession {
             if let Some(sl) = &mut self.current_sess_log {
                 sl.add_event("GATEWAY", "taking ONLINE transcription path (Deepgram)");
             }
-            let (text, be) = self.transcribe_deepgram().await;
+            let (text, be) = self.transcribe_deepgram(&audio_data).await;
             full_transcript = text;
             backend = be;
         }
@@ -657,14 +810,6 @@ impl RealtimeSession {
             self.latency_logger.log(&metrics);
         }
 
-        // Capture session start timestamp for archive filename consistency
-        let archive_timestamp = self.current_sess_log.as_ref().map(|sl| {
-            let dur = sl.start_time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-            let secs = dur.as_secs();
-            let (y, m, d, h, min, s) = audio::timestamp_parts(secs);
-            format!("{y:04}{m:02}{d:02}_{h:02}{min:02}{s:02}")
-        });
-
         // Write session log
         if let Some(sl) = &mut self.current_sess_log {
             sl.end_time = Some(std::time::SystemTime::now());
@@ -676,10 +821,6 @@ impl RealtimeSession {
             } else {
                 "OK_EMPTY".to_string()
             };
-            // Set wav_path so session log includes the audio filename
-            if let Some(ref ts) = archive_timestamp {
-                sl.wav_path = format!("{ts}_audio.wav");
-            }
             sl.add_event(
                 "GATEWAY",
                 &format!("commit complete: backend={backend}, transcript={} chars", full_transcript.len()),
@@ -695,12 +836,13 @@ impl RealtimeSession {
         self.audio_buffer.clear();
         self.current_rec = None;
 
-        // Archive audio and transcript in background (use session start timestamp for filename)
-        let audio_for_archive = audio_data;
+        // Audio was saved before transcription; now the transcript (same timestamp).
+        drop(audio_data);
         let transcript_for_archive = full_transcript;
         let backend_for_archive = backend.clone();
+        let ts_for_archive = archive_timestamp.unwrap_or_default();
         tokio::task::spawn_blocking(move || {
-            audio::archive_recording(&audio_for_archive, &transcript_for_archive, &backend_for_archive, archive_timestamp);
+            audio::save_transcript(&transcript_for_archive, &backend_for_archive, &ts_for_archive);
         });
 
         // If offline, try async reconnection for next recording
@@ -710,22 +852,33 @@ impl RealtimeSession {
     }
 
     /// Finalize Deepgram stream and collect transcript.
-    async fn transcribe_deepgram(&mut self) -> (String, String) {
+    ///
+    /// Every step is bounded. If the stream misbehaves (Finalize fails, it does
+    /// not close), its finals may be incomplete: the full recording is then
+    /// re-transcribed in one batch call, falling back to the finals we have.
+    async fn transcribe_deepgram(&mut self, audio_data: &[u8]) -> (String, String) {
+        let mut degraded = self.dg_broken;
+
         // Send Finalize to flush remaining audio
         {
             let dg = self.deepgram_client.lock().await;
             if let Some(client) = dg.as_ref() {
                 if let Err(e) = client.finalize().await {
                     tracing::warn!(error = %e, "Finalize failed");
+                    degraded = true;
                 }
             }
         }
 
         // Wait for Deepgram to send back remaining finals
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        if !degraded {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        }
 
-        // Close connection and wait for read loop
-        self.close_deepgram().await;
+        // Close connection and wait (bounded) for the read loop
+        if !self.close_deepgram().await {
+            degraded = true;
+        }
 
         // Collect full transcript
         let full_transcript = {
@@ -734,6 +887,14 @@ impl RealtimeSession {
             finals.clear();
             text
         };
+
+        if degraded {
+            let (text, be) = self.rescue_batch(audio_data, "Deepgram stream stalled or failed").await;
+            if !text.is_empty() {
+                return (text, be);
+            }
+            tracing::warn!(chars = full_transcript.len(), "Batch rescue gave nothing; using the stream's finals");
+        }
 
         (full_transcript, "deepgram".to_string())
     }
@@ -773,8 +934,9 @@ impl RealtimeSession {
 
             // Archive audio for debugging (no transcription)
             let audio_data = self.audio_buffer.clone();
+            let ts = self.rec_timestamp();
             tokio::task::spawn_blocking(move || {
-                audio::archive_recording(&audio_data, "", "cleared", None);
+                audio::save_audio(&audio_data, &ts);
             });
 
             if let Some(sl) = &mut self.current_sess_log {
@@ -833,6 +995,34 @@ impl RealtimeSession {
 
     /// Cleanup on WebSocket disconnect.
     pub async fn cleanup(&mut self) {
+        // Audio of a recording that was never committed (client died, socket
+        // killed, gateway shutting down) used to be dropped here — 2026-09-30
+        // rec-009, 2026-07-26 rec-007 (234 s). Save it; orphan-recovery retries it.
+        if !self.audio_buffer.is_empty() {
+            let secs = self.audio_buffer.len() as f64 / 48000.0;
+            let ts = self.rec_timestamp();
+            let buf = std::mem::take(&mut self.audio_buffer);
+            let saved = tokio::task::spawn_blocking(move || audio::save_audio(&buf, &ts))
+                .await
+                .ok()
+                .flatten();
+            tracing::warn!(
+                audio_secs = format_args!("{secs:.1}"),
+                path = ?saved,
+                "WebSocket closed mid-recording — saved the uncommitted audio"
+            );
+            if let Some(sl) = &mut self.current_sess_log {
+                match &saved {
+                    Some(p) => {
+                        sl.add_event("GATEWAY", &format!("closed mid-recording: saved {secs:.1}s to {}", p.display()));
+                        if let Some(name) = p.file_name() {
+                            sl.wav_path = name.to_string_lossy().to_string();
+                        }
+                    }
+                    None => sl.add_event("GATEWAY", &format!("closed mid-recording: FAILED to save {secs:.1}s")),
+                }
+            }
+        }
         if let Some(sl) = &mut self.current_sess_log {
             sl.end_time = Some(std::time::SystemTime::now());
             if sl.status.is_empty() {
