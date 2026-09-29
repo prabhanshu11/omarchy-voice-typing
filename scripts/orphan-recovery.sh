@@ -329,6 +329,15 @@ main() {
     log "Starting orphan recovery scan"
     init_state
 
+    # Client-side spool files (hyprwhspr, ~/Programs/recordings/client) whose text
+    # never arrived and whose in-process rescue failed: retry with Deepgram batch.
+    # Independent of the gateway, so it runs before the gateway health check.
+    local vr="${HOME}/Programs/omarchy-voice-typing/scripts/voice-retranscribe"
+    if [[ "$DRY_RUN" == "false" && -x "$vr" ]]; then
+        "$vr" --pending --notify >/dev/null 2>>"$LOG_DIR/orphan-recovery.log" || \
+            log "voice-retranscribe --pending: some files still failing (see logs/retranscribe.log)"
+    fi
+
     if [[ ! -d "$RECORDINGS_DIR" ]]; then
         log "Recordings directory not found: $RECORDINGS_DIR"
         exit 0
