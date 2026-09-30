@@ -85,9 +85,20 @@ pub fn compute_rms_i16(pcm: &[u8]) -> f64 {
     (sum_sq / num_samples as f64).sqrt()
 }
 
-/// Threshold below which audio is considered silence (no usable speech).
+/// Default threshold below which audio is considered silence (no usable speech).
 /// Based on empirical data: broken BT mic produces RMS 0-27, normal speech > 500.
 pub const SILENCE_RMS_THRESHOLD: f64 = 100.0;
+
+/// Effective silence threshold: `$SILENCE_RMS_THRESHOLD` if set, else 100.
+/// The desktop sets 10 via a systemd drop-in: its low-gain Jabra EVOLVE (59 %)
+/// produces RMS 30-90 for speech (was an uncommitted edit there since 2026-04-04).
+pub fn silence_rms_threshold() -> f64 {
+    std::env::var("SILENCE_RMS_THRESHOLD")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| *v >= 0.0)
+        .unwrap_or(SILENCE_RMS_THRESHOLD)
+}
 
 /// Archive a recording (WAV + transcript) to disk.
 ///

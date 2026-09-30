@@ -621,10 +621,11 @@ impl RealtimeSession {
 
         // Check for silence — skip Deepgram if mic is capturing no audio
         let audio_rms = audio::compute_rms_i16(&audio_data);
-        if audio_rms < audio::SILENCE_RMS_THRESHOLD {
+        let silence_threshold = audio::silence_rms_threshold();
+        if audio_rms < silence_threshold {
             tracing::warn!(
                 rms = format_args!("{:.1}", audio_rms),
-                threshold = audio::SILENCE_RMS_THRESHOLD,
+                threshold = silence_threshold,
                 audio_secs = format_args!("{:.1}", audio_duration),
                 "SILENCE DETECTED — mic may be broken or muted. Skipping transcription."
             );
@@ -632,7 +633,7 @@ impl RealtimeSession {
             if let Some(sl) = &mut self.current_sess_log {
                 sl.add_event("GATEWAY", &format!(
                     "SILENCE DETECTED: rms={:.1} < threshold={:.0}, skipping transcription",
-                    audio_rms, audio::SILENCE_RMS_THRESHOLD
+                    audio_rms, silence_threshold
                 ));
             }
 
