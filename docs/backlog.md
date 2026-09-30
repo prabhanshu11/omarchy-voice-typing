@@ -250,11 +250,16 @@ Change the mic overlay color to indicate which backend is being used (Deepgram v
 
 ## Voice data-loss follow-ups (2026-09-30, see docs/issues/2026-09-30-voice-data-loss.md)
 
-- **Deploy to the desktop**: omarchy-voice-typing master (ahead of origin) and local-bootstrapping
-  `a6eaec5`/`2caac5a` are committed locally only. Pushing local-bootstrapping triggers sync-from-master
-  plus setup-voice-typing on every machine, which restarts the voice services. Needs the user's go.
-- **Archive (not delete)** `logs/orphan-recovery.log` (692 MB, 99.9 % cascade noise) and the 27,131
-  orphan-recovery copies in `~/Programs/recordings`. His call.
+- ~~Deploy to the desktop~~: DONE 2026-09-30 14:xx (he said yes). Pushed both repos. The desktop's
+  checkout carried an uncommitted 2026-04-04 edit (silence threshold 10 for the Jabra), which blocked the
+  fast-forward. It is now a drop-in (`SILENCE_RMS_THRESHOLD=10`, local-bootstrapping
+  `desktop-mic.conf`); the edit is kept in the desktop's `git stash`.
+- ~~Archive the orphan-recovery log and copies~~: DONE 2026-09-30 (he said yes). They are in
+  `/mnt/external/voice-typing-archive/omarchy-laptop/omarchy-voice-typing/2026-09-30/` on the desktop's
+  Elements drive: 3.8 MB tar.zst of 27,131 copies (only 6 distinct clips) and a 24.6 MB .zst of the 692 MB log.
+  Checked with tar --diff, cmp and sha256 before the sources were removed. README pointers are in
+  `~/Programs/recordings/` and `logs/`.
+- Client spool second copy: KEEP (he said yes, 2026-09-30). It is always on and never pruned.
 - **Late-transcript race** (upstream realtime_client): a transcript that arrives after the 30 s timeout
   could be taken as the next recording's text if it lands after the next commit's `response_event.clear()`.
 - **Asynchronous commit in the gateway**: commits still run inline in the WebSocket loop (bounded to about 20 s).

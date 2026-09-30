@@ -185,3 +185,15 @@ and 4 long recordings that were probably left on by mistake but may have held sp
   `sync-from-master` on every machine, which re-runs `setup-voice-typing.sh` (pull, build, restart the voice services).
 - `logs/orphan-recovery.log` (692 MB, 99.9 % cascade noise) and the 27,131 copies are for him to decide on. Archive
   (compress or move to the Elements drive), do not delete.
+
+## Decisions and deployment (2026-09-30 afternoon, his yes on all three)
+
+1. **Pushed and deployed.** omarchy-voice-typing `origin/master` = `65c2490`. local-bootstrapping carries
+   the client patch as `7f731ba`/`95f88f8` (rebased) plus the desktop drop-in `6a7b1a0`. The desktop's
+   checkout had an uncommitted 2026-04-04 edit (silence threshold 10 for its Jabra) that silently blocked
+   the fast-forward, so the first sync rebuilt the *old* gateway there. The threshold is now an env var
+   (`SILENCE_RMS_THRESHOLD`, default 100) with a desktop drop-in setting 10. The edit is in the desktop's
+   `git stash`.
+2. **Archived:** the orphan-recovery log and the 27,131 copies, to
+   `/mnt/external/voice-typing-archive/omarchy-laptop/omarchy-voice-typing/2026-09-30/` (see `MANIFEST.md` there).
+3. **Client spool second copy kept** as the default: always on, never pruned.
