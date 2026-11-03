@@ -1,7 +1,7 @@
 //! Which speech-to-text backend a new recording uses.
 //!
 //! Read fresh at the start of every recording, so switching needs no restart:
-//!   1. file `~/.config/voice-typing/stt-provider` (first word: `local` | `deepgram`)
+//!   1. file `~/.config/voice-typing/stt-provider` (first word: `local` | `deepgram` | `offline`)
 //!   2. env `STT_PROVIDER`
 //!   3. default `deepgram`
 //!
@@ -9,7 +9,11 @@
 //! fine-tuned Whisper on the desktop GPU (LAN_WHISPER_URL) with a short timeout
 //! (2.5 s + 0.15 s per audio second). If the desktop is unreachable or slow it
 //! falls back automatically to Deepgram batch (same nova-2 model), then to the
-//! laptop's local-whisper (LOCAL_WHISPER_URL). Switch with the
+//! laptop's local-whisper (LOCAL_WHISPER_URL).
+//!
+//! `offline` = no network at all: audio is buffered and sent at commit to the
+//! laptop's own local-whisper (LOCAL_WHISPER_URL) only — no Deepgram, no desktop.
+//! The popup's "Offline mode" button toggles it (2026-11-03). Switch with the
 //! `voice-stt-provider` script in local-bootstrapping.
 
 use std::path::PathBuf;
@@ -18,6 +22,7 @@ use std::path::PathBuf;
 pub enum Provider {
     Deepgram,
     Local,
+    Offline,
 }
 
 impl Provider {
@@ -25,7 +30,13 @@ impl Provider {
         match self {
             Provider::Deepgram => "deepgram",
             Provider::Local => "local",
+            Provider::Offline => "offline",
         }
+    }
+
+    /// Buffer the whole recording and transcribe it at commit (no Deepgram stream).
+    pub fn buffers(self) -> bool {
+        matches!(self, Provider::Local | Provider::Offline)
     }
 }
 
@@ -38,6 +49,7 @@ fn parse(s: &str) -> Option<Provider> {
     match s.split_whitespace().next()?.to_ascii_lowercase().as_str() {
         "local" | "whisper" | "local-whisper" => Some(Provider::Local),
         "deepgram" | "nova-2" => Some(Provider::Deepgram),
+        "offline" | "laptop" => Some(Provider::Offline),
         _ => None,
     }
 }
@@ -83,6 +95,8 @@ mod tests {
         assert_eq!(parse("local\n"), Some(Provider::Local));
         assert_eq!(parse(" Deepgram "), Some(Provider::Deepgram));
         assert_eq!(parse("whisper"), Some(Provider::Local));
+        assert_eq!(parse("offline\n"), Some(Provider::Offline));
+        assert!(Provider::Offline.buffers() && Provider::Local.buffers() && !Provider::Deepgram.buffers());
         assert_eq!(parse("nonsense"), None);
         assert_eq!(parse(""), None);
     }

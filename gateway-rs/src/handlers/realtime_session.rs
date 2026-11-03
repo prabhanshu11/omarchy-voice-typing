@@ -438,7 +438,7 @@ impl RealtimeSession {
         // audio chunk in handle_audio_append.
 
         self.provider = provider::current();
-        let backend = if self.is_offline() || self.provider == Provider::Local {
+        let backend = if self.is_offline() || self.provider.buffers() {
             "local-whisper"
         } else {
             "nova-2"
@@ -527,8 +527,8 @@ impl RealtimeSession {
             }
         }
 
-        // Local provider: just accumulate; Whisper transcribes the whole buffer at commit.
-        if self.provider == Provider::Local {
+        // Local/offline provider: just accumulate; Whisper transcribes the whole buffer at commit.
+        if self.provider.buffers() {
             return;
         }
 
@@ -715,13 +715,13 @@ impl RealtimeSession {
         let transcribe_start = Instant::now();
         let (full_transcript, backend);
 
-        if dg_nil && self.dg_broken && !offline && self.provider != Provider::Local {
+        if dg_nil && self.dg_broken && !offline && !self.provider.buffers() {
             // Stream failed mid-recording: one batch call over the full buffer.
             self.close_deepgram().await;
             let (text, be) = self.rescue_batch(&audio_data, "stream failed mid-recording").await;
             full_transcript = text;
             backend = be;
-        } else if offline || dg_nil || self.provider == Provider::Local {
+        } else if offline || dg_nil || self.provider.buffers() {
             // OFFLINE PATH
             tracing::info!(
                 offline = %offline,
@@ -735,7 +735,10 @@ impl RealtimeSession {
             }
             self.close_deepgram().await;
 
-            let (text, be) = if self.provider == Provider::Local {
+            let (text, be) = if self.provider == Provider::Offline {
+                // Offline mode (popup button): the laptop's own Whisper, no network.
+                fallback::transcribe_offline(&audio_data, None, &self.local_whisper_url).await
+            } else if self.provider == Provider::Local {
                 fallback::transcribe_local_provider(
                     &audio_data,
                     self.lan_whisper_url.as_deref(),

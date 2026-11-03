@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""voice-retranscribe — transcribe a saved voice-typing WAV with Deepgram (batch).
+"""voice-retranscribe — transcribe a saved voice-typing WAV (Deepgram batch or laptop Whisper).
 
 Recovery tool from the 2026-09-30 data-loss incident
 (docs/issues/2026-09-30-voice-data-loss.md). Every recording is now on disk:
@@ -11,6 +11,12 @@ Usage:
   voice-retranscribe FILE.wav [--copy] [--notify] [--json] [--model nova-3]
   voice-retranscribe --pending [--copy] [--notify]   # every failed/crashed client spool
   voice-retranscribe --list                          # client spool files and their status
+  voice-retranscribe --last --copy --notify          # retry the newest failed recording
+                                                     #   (the popup's "Retry" button)
+
+Backend (--backend, default auto): auto = the laptop's local Whisper when
+offline mode is on (~/.config/voice-typing/stt-provider says `offline`),
+otherwise Deepgram, falling back to the laptop's Whisper when Deepgram fails.
 
 Writes the transcript next to the audio (client spool: <stem>.txt + status in
 <stem>.json; gateway WAV: ~/Programs/transcripts/<ts>_recovered.txt, which is
@@ -28,6 +34,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +45,9 @@ RECORDINGS = HOME / "Programs" / "recordings"
 SPOOL = RECORDINGS / "client"
 TRANSCRIPTS = HOME / "Programs" / "transcripts"
 LOG = REPO / "logs" / "retranscribe.log"
+PROVIDER_FILE = HOME / ".config" / "voice-typing" / "stt-provider"
+LOCAL_WHISPER_URL = os.environ.get("LOCAL_WHISPER_URL", "http://localhost:8767")
+VOCAB = HOME / "Programs" / "voice-stt" / "labels" / "vocab.txt"
 
 
 def log(msg):
@@ -74,7 +84,53 @@ def deepgram_key():
     return None
 
 
-def transcribe(wav: Path, model: str, timeout: float) -> str:
+def offline_mode() -> bool:
+    try:
+        return PROVIDER_FILE.read_text().split()[0].lower() in ("offline", "laptop")
+    except (OSError, IndexError):
+        return False
+
+
+def transcribe_local(wav: Path, timeout: float) -> str:
+    """The laptop's own local-whisper server (no network beyond localhost)."""
+    url = f"{LOCAL_WHISPER_URL}/transcribe"
+    try:
+        words = [l.strip() for l in VOCAB.read_text().splitlines()
+                 if l.strip() and not l.strip().startswith("#")]
+        if words:
+            url += "?" + urllib.parse.urlencode({"hotwords": ", ".join(words)})
+    except OSError:
+        pass
+    req = urllib.request.Request(url, data=wav.read_bytes(), method="POST",
+                                 headers={"Content-Type": "audio/wav"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.load(resp)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"local Whisper HTTP {e.code}: {e.read()[:300]!r}") from None
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"local Whisper unreachable ({LOCAL_WHISPER_URL}): {e.reason}") from None
+    if body.get("error"):
+        raise RuntimeError(f"local Whisper: {body['error']}")
+    return (body.get("text") or "").strip()
+
+
+def transcribe(wav: Path, model: str, timeout: float, backend: str = "deepgram") -> str:
+    """backend: deepgram | local | auto (see the module docstring)."""
+    if backend == "auto":
+        backend = "local" if offline_mode() else "deepgram-then-local"
+    if backend == "local":
+        return transcribe_local(wav, max(timeout, 180.0))
+    try:
+        return transcribe_deepgram(wav, model, timeout)
+    except Exception as e:
+        if backend != "deepgram-then-local":
+            raise
+        log(f"{wav.name}: Deepgram failed ({e}); trying the laptop's local Whisper")
+        return transcribe_local(wav, max(timeout, 180.0))
+
+
+def transcribe_deepgram(wav: Path, model: str, timeout: float) -> str:
     key = deepgram_key()
     if not key:
         raise RuntimeError("no Deepgram key (DEEPGRAM_API_KEY / .env / pass api/deepgram)")
@@ -163,7 +219,7 @@ def pending():
 
 def run_one(wav: Path, args) -> str:
     t0 = time.monotonic()
-    text = transcribe(wav, args.model, args.timeout)
+    text = transcribe(wav, args.model, args.timeout, args.backend)
     out = save_text(wav, text) if text else None
     if not text and meta_path(wav).exists():
         # Deepgram found no words: stop --pending from retrying it forever.
@@ -180,6 +236,10 @@ def main():
     ap.add_argument("wav", nargs="*", type=Path)
     ap.add_argument("--pending", action="store_true", help="retry every failed/crashed client spool file")
     ap.add_argument("--list", action="store_true", help="list client spool files with status")
+    ap.add_argument("--last", action="store_true",
+                    help="retry only the newest failed/crashed recording (the popup's Retry button)")
+    ap.add_argument("--backend", choices=["auto", "deepgram", "local"], default="auto",
+                    help="auto: laptop Whisper in offline mode, else Deepgram then laptop Whisper")
     ap.add_argument("--copy", action="store_true", help="copy the (last) transcript to the clipboard")
     ap.add_argument("--notify", action="store_true", help="desktop notification with the result")
     ap.add_argument("--json", action="store_true", help="print {file, text} JSON lines")
@@ -195,8 +255,21 @@ def main():
         return 0
 
     files = list(args.wav) + (pending() if args.pending else [])
+    if args.last:
+        newest = pending()[-1:]
+        if not newest:
+            log("--last: no failed recording to retry")
+            if args.notify:
+                notify("Voice typing: nothing to retry",
+                       "Every saved recording already has a transcript.")
+            return 0
+        if args.notify:
+            where = "the laptop's Whisper (offline mode)" if offline_mode() and args.backend == "auto" else args.backend
+            notify("Voice typing: retrying the last recording",
+                   f"{newest[0].name} via {where}…")
+        files += newest
     if not files:
-        if args.pending:
+        if args.pending or args.last:
             return 0
         ap.error("give a WAV file, --pending or --list")
 

@@ -40,6 +40,12 @@ WorkingDirectory=%h/Programs/omarchy-voice-typing
   recording (`~/.config/voice-typing/stt-provider`); local = desktop GPU Whisper over
   Tailscale (LAN_WHISPER_URL) → laptop local-whisper. Training/eval tools in `stt/`,
   corrections web app `stt/webapp` (voice-labels, :8771). **Read `docs/local-stt.md` first.**
+- **Offline mode (2026-11-03)**: provider `offline` = the laptop's own local-whisper only (no
+  Deepgram, no desktop). Toggled by the mic popup's "Offline mode on / off" button
+  (`voice-stt-provider toggle-offline`); the tooltip's `Mode:` line shows the current one.
+- **Retry button (2026-11-03)**: the popup's "Retry the last failed recording" runs
+  `voice-retranscribe --last --copy --notify` (newest failed/crashed client spool → clipboard).
+  Backend auto: offline mode → laptop Whisper; otherwise Deepgram, then laptop Whisper on failure.
 - **MicOSD**: GTK4 overlay showing recording state (managed by hyprwhspr-patch)
 
 ## Key Files
@@ -54,7 +60,7 @@ WorkingDirectory=%h/Programs/omarchy-voice-typing
 | `stt/` | Local STT: inventory, dataset, LoRA training, eval, `round.sh`, `webapp/` |
 | `docs/local-stt.md` | Local STT design, data inventory, WER table, runbook |
 | `logs/` | Runtime logs (gitignored) |
-| `scripts/voice-retranscribe` | Re-transcribe any saved WAV (Deepgram batch); `--pending` retries failed client spool files |
+| `scripts/voice-retranscribe` | Re-transcribe any saved WAV (`--backend auto/deepgram/local`); `--pending` retries every failed client spool file, `--last` only the newest |
 | `~/Programs/recordings/client/` | hyprwhspr-side spool: every recording written to disk while recording (voice_safety.py in the local-bootstrapping hyprwhspr-patch) |
 
 **No audio may exist only in memory** (2026-09-30 incident, `docs/issues/2026-09-30-voice-data-loss.md`):
