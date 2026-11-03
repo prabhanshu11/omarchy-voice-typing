@@ -118,3 +118,25 @@ warm model, seconds to transcribe. CPU = i7-10510U (4 cores / 8 threads), int8. 
 - distil on the CPU is ~50 % slower than on the MX330; 8 threads do not help (hyper-threads).
 - The time is nearly flat in clip length: Whisper encodes a full 30 s window per chunk.
 - `base` on the CPU matches or beats `base` on the MX330 (clearly on the 24 s clip).
+
+## 2026-11-03 late: the hybrid as deployed (base on the CPU, distil on the MX330 from 25 s)
+
+His choice (2026-11-03): short dictations on `base`, from 25 s on `distil-large-v3`, the whole
+recording after Stop. Measured through the gateway (`ws` → offline provider → local-whisper),
+seconds from Stop to text, hotwords on:
+
+| Clip | Model | Seconds |
+|------|-------|--------:|
+| 10.5 s | `base`, CPU int8, 4 threads | 1.1 |
+| 74.7 s | `distil-large-v3`, MX330 int8_float32 | 72.4 |
+| 74.7 s | `base`, CPU (distil not loaded) | 4.3 |
+
+- distil runs at ~1× real time on long clips (72 s for 75 s; three 30 s windows at ~20.5 s
+  each plus decoding), so a long dictation waits about as long as it lasted. Estimate before
+  measuring was 0.8×; the measurement is the number.
+- distil's encoder costs ~20.5 s per 30 s window on the MX330, the first pass as much as later
+  ones (20.7 / 20.5 / 20.5 s on 1 s of silence), so a warm-up pass buys nothing.
+- Ready after switching to Local: 5.0 s (model load ~4 s; the GPU wakes from suspend).
+  With the old warm-up it was 46 s (silence decoded to the 448-token limit), then 26 s with
+  the decode capped (one window). The long model now skips the warm-up.
+- GPU memory with distil loaded: 994 MiB. With the source online nothing is on the GPU.

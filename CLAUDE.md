@@ -41,13 +41,19 @@ WorkingDirectory=%h/Programs/omarchy-voice-typing
   Tailscale (LAN_WHISPER_URL) → laptop local-whisper. Training/eval tools in `stt/`,
   corrections web app `stt/webapp` (voice-labels, :8771). **Read `docs/local-stt.md` first.**
 - **Source button (2026-11-03)**: the mic popup's "Source:" button names where speech is
-  transcribed: `Source: Deepgram (online)` or `Source: Local · NVIDIA MX330 GPU · Whisper base`
+  transcribed: `Source: Deepgram (online)` or `Source: Local · base on i7-10510U · distil from 25 s on MX330`
   (provider `offline` = this laptop's own local-whisper only, no internet, no desktop). It is
   highlighted while local; a tap switches in place (`voice-stt-provider toggle-offline`, label from
-  `voice-stt-provider label`, bar-touch `state-cmd`). No notification. Screenshots: `docs/img/popup-source-*.png`.
-- **Laptop local-whisper serves `base`** (2026-11-03): ~3 s from stop to text for 8-10 s clips through
-  the gateway. The service file had carried `distil-large-v3` since 02-14 (flat ~22 s per clip on the
-  MX330), undoing the 02-13 switch to `base` (`local-whisper/LESSONS_LEARNED.md`).
+  `voice-stt-provider label`, bar-touch `state-cmd`). No notification. While the source is not ready
+  (local models loading, or Deepgram's `/v1/auth/token` not answering) it pulses yellow, one redraw
+  per 0.8 s, until it is. Screenshots: `docs/img/popup-*.png`.
+- **Laptop local-whisper is a hybrid** (2026-11-03, his choice): recordings under 25 s go to `base`
+  on the CPU (~1 s from Stop to text); 25 s and longer go whole to `distil-large-v3` on the MX330
+  (~1× real time: a 75 s dictation took 72 s; more accurate). distil runs in a child process loaded
+  only while the Source is Local (ready ~5 s after the switch; the button pulses until then) and
+  ended when the Source goes online, so the GPU holds nothing then. Not ready -> base takes the long
+  ones too. `curl localhost:8767/health` shows both. Lessons + numbers: `local-whisper/LESSONS_LEARNED.md`,
+  `local-whisper/BENCHMARKS.md`; test: `local-whisper/test_hybrid.py`.
 - **Retry button (2026-11-03)**: the popup's "Retry the last failed recording" runs
   `voice-retranscribe --last --copy --notify` (newest failed/crashed client spool → clipboard).
   Backend auto: offline mode → laptop Whisper; otherwise Deepgram, then laptop Whisper on failure.

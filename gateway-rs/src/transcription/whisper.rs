@@ -15,15 +15,26 @@ pub struct WhisperResponse {
     pub transcribe_time: f64,
 }
 
+/// How long to wait for this machine's own local-whisper: at least 120 s, and
+/// 1.2 s per second of audio + 30 s beyond that. Since 2026-11-03 the laptop
+/// sends recordings of 25 s and longer to distil-large-v3 on the MX330, which
+/// takes ~0.8 s per second of audio (21 s per 30 s window), so a fixed 120 s cut
+/// off dictations longer than ~2.5 minutes. Still bounded: no wait is open-ended.
+pub fn local_timeout(audio_bytes: usize) -> Duration {
+    let audio_secs = audio_bytes as f64 / 48000.0;
+    Duration::from_secs_f64((1.2 * audio_secs + 30.0).max(120.0))
+}
+
 /// Transcribe audio using a local whisper server.
 ///
-/// POSTs a WAV file to `{base_url}/transcribe` with a 120s timeout.
+/// POSTs a WAV file to `{base_url}/transcribe` with `local_timeout` (>= 120 s).
 /// Matches Go's `transcribeLocal()`.
 pub async fn transcribe_local(
     base_url: &str,
     audio_data: &[u8],
 ) -> Result<WhisperResponse, GatewayError> {
-    transcribe_whisper(base_url, audio_data, Duration::from_secs(120), "local-whisper").await
+    let timeout = local_timeout(audio_data.len());
+    transcribe_whisper(base_url, audio_data, timeout, "local-whisper").await
 }
 
 /// Transcribe audio using a LAN whisper server (e.g., desktop GPU via Tailscale).
@@ -128,4 +139,16 @@ async fn transcribe_whisper(
     );
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod local_timeout_tests {
+    use super::local_timeout;
+    use std::time::Duration;
+
+    #[test]
+    fn short_clips_keep_120s_and_long_ones_scale() {
+        assert_eq!(local_timeout(48000 * 10), Duration::from_secs(120));
+        assert_eq!(local_timeout(48000 * 300), Duration::from_secs(390));
+    }
 }

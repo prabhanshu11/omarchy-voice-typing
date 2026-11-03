@@ -103,6 +103,21 @@ journalctl --user -u local-whisper -f
 journalctl --user -u voice-gateway -u local-whisper -f
 ```
 
+## 2026-11-03: the hybrid (base on the CPU, distil on the GPU from 25 s)
+
+- **Free a GPU model by ending its process.** Deleting a CTranslate2 CUDA model leaves the
+  CUDA context (~300 MB, GPU kept awake) until the process exits. So the long model runs as a
+  child process of server.py (same script, 127.0.0.1:8777), started while the source is Local
+  and terminated when it is not.
+- **Warm-ups on silence decode to the token limit.** Whisper "hears" words in 1 s of silence
+  and decodes up to 448 tokens with beam 5: distil's warm-up took 41 s. Cap it
+  (`max_new_tokens=4`). And on the MX330 even a capped pass costs a full 30 s window
+  (~20.5 s) with no first-run penalty to save, so the long model skips warm-up altogether.
+- **ThreadingHTTPServer.** A plain HTTPServer answers /health only after a running 20-70 s
+  distil transcription finishes; the popup's Source button polls /health while loading.
+- **Bound the caller by audio length.** The gateway's fixed 120 s local timeout would have cut
+  distil off past ~2.5 minutes of speech; it is now max(120 s, 1.2 s per audio second + 30 s).
+
 ## Quick Troubleshooting
 
 | Symptom | Check |
@@ -113,3 +128,4 @@ journalctl --user -u voice-gateway -u local-whisper -f
 | Empty transcript (online) | Deepgram WebSocket dead? Check `[Deepgram] ReadLoop ended` |
 | Model switch hangs | Check VRAM — previous model may not have freed memory |
 | "model not ready" 503 | Model still loading or warmup in progress |
+| Long dictation came back from base | `curl localhost:8767/health` → `long.state`: distil loads only while the source is Local; `error` = it failed (retries with back-off) |
