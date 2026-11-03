@@ -101,3 +101,20 @@ The warmup runs in a background thread after model loading completes. The HTTP s
 3. VRAM usage is minimal (225 MB vs 1089 MB)
 4. Accuracy is sufficient for voice typing use case
 5. Can switch to distil-large-v3 at runtime via `GET /switch?model=distil-large-v3`
+
+## 2026-11-03: short voice clips, GPU vs CPU (power profile "balanced")
+
+Three real voice-typing recordings (8.2 s, 10.5 s, 24.4 s), beam 5, `condition_on_previous_text=False`,
+warm model, seconds to transcribe. CPU = i7-10510U (4 cores / 8 threads), int8. GPU = MX330, int8_float32.
+
+| Model | Device | 8.2 s clip | 10.5 s clip | 24.4 s clip |
+|-------|--------|-----------:|------------:|------------:|
+| `distil-large-v3` | GPU | 21.4 | 21.1 | 23.5 |
+| `distil-large-v3` | CPU, 4 threads | 31.2 | 34.0 | 32.6 |
+| `distil-large-v3` | CPU, 8 threads | 37.4 | 33.9 | 34.8 |
+| `base` | GPU | 2.7 | 2.4 | 4.3 |
+| `base` | CPU, 4 threads | 2.3 | 2.2 | 2.7 |
+
+- distil on the CPU is ~50 % slower than on the MX330; 8 threads do not help (hyper-threads).
+- The time is nearly flat in clip length: Whisper encodes a full 30 s window per chunk.
+- `base` on the CPU matches or beats `base` on the MX330 (clearly on the 24 s clip).
