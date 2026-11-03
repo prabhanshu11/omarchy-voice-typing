@@ -38,6 +38,16 @@ For offline voice typing (short clips, 3-10s):
 curl http://localhost:8767/switch?model=distil-large-v3
 ```
 
+## 2026-11-03: the laptop ran distil-large-v3 for 8 months
+
+The 02-13 switch to `base` was made in this repo's unit file, but the unit that is actually deployed
+is local-bootstrapping `dotfiles/systemd/user/local-whisper.service`, tracked on 02-14 with
+`distil-large-v3`. Result: every local recording took a flat ~21-23 s on the MX330 (5 s or 25 s of
+audio alike), noticed when the popup's Local source was used. Fixed in the deployed unit: `base`
+measures 2.5-2.8 s for 8-10 s clips (warm), 3.0-3.3 s end to end through the gateway. Greedy
+decoding (beam 1) saved only 10-20 % on the same clips, so beam 5 stays.
+**Lesson:** the deployed unit lives in local-bootstrapping; change it there, not only here.
+
 ## Stale Deepgram WebSocket Race Condition
 
 **Symptom**: First offline transcription works. Second recording produces empty transcript.

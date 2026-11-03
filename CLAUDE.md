@@ -40,9 +40,14 @@ WorkingDirectory=%h/Programs/omarchy-voice-typing
   recording (`~/.config/voice-typing/stt-provider`); local = desktop GPU Whisper over
   Tailscale (LAN_WHISPER_URL) → laptop local-whisper. Training/eval tools in `stt/`,
   corrections web app `stt/webapp` (voice-labels, :8771). **Read `docs/local-stt.md` first.**
-- **Offline mode (2026-11-03)**: provider `offline` = the laptop's own local-whisper only (no
-  Deepgram, no desktop). Toggled by the mic popup's "Offline mode on / off" button
-  (`voice-stt-provider toggle-offline`); the tooltip's `Mode:` line shows the current one.
+- **Source button (2026-11-03)**: the mic popup's "Source:" button names where speech is
+  transcribed: `Source: Deepgram (online)` or `Source: Local · NVIDIA MX330 GPU · Whisper base`
+  (provider `offline` = this laptop's own local-whisper only, no internet, no desktop). It is
+  highlighted while local; a tap switches in place (`voice-stt-provider toggle-offline`, label from
+  `voice-stt-provider label`, bar-touch `state-cmd`). No notification. Screenshots: `docs/img/popup-source-*.png`.
+- **Laptop local-whisper serves `base`** (2026-11-03): ~3 s from stop to text for 8-10 s clips through
+  the gateway. The service file had carried `distil-large-v3` since 02-14 (flat ~22 s per clip on the
+  MX330), undoing the 02-13 switch to `base` (`local-whisper/LESSONS_LEARNED.md`).
 - **Retry button (2026-11-03)**: the popup's "Retry the last failed recording" runs
   `voice-retranscribe --last --copy --notify` (newest failed/crashed client spool → clipboard).
   Backend auto: offline mode → laptop Whisper; otherwise Deepgram, then laptop Whisper on failure.
